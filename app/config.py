@@ -22,6 +22,7 @@ class Config:
     demo: bool
     telegram_token: str
     telegram_chat: str
+    syslog_port: int
 
 
 def load() -> Config:
@@ -38,4 +39,6 @@ def load() -> Config:
         demo=demo,
         telegram_token=os.environ.get("MKMON_TELEGRAM_TOKEN", ""),
         telegram_chat=os.environ.get("MKMON_TELEGRAM_CHAT", ""),
+        # 0 = no escuchar syslog. En modo demo no se abre ningún puerto salvo que se pida.
+        syslog_port=int(os.environ.get("MKMON_SYSLOG_PORT", "0" if demo else "5140")),
     )

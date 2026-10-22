@@ -114,6 +114,8 @@ class FakeRouterOS:
         self.bytes_per_request = bytes_per_request
         self.reject_queries = reject_queries
         self.requests: list[list[str]] = []
+        self.ppp_active: list[dict] = []     # sesiones de /ppp/active (se editan desde la prueba)
+        self.ppp_error: str | None = None    # si se pone, /ppp/active/print contesta con un error
         self._sock = socket.socket()
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
@@ -163,6 +165,8 @@ class FakeRouterOS:
                     write_sentence(conn, ["!done"])
                 elif cmd == "/interface/print":
                     self._interface_print(conn, args)
+                elif cmd == "/ppp/active/print":
+                    self._ppp_active_print(conn, args)
                 else:
                     write_sentence(conn, ["!trap", "=message=no such command prefix"])
                     write_sentence(conn, ["!done"])
@@ -192,6 +196,23 @@ class FakeRouterOS:
         for item in snapshot:
             if not eval_query(query, item):
                 continue
+            keys = [".id"] + (proplist if proplist else [k for k in item if k != ".id"])
+            write_sentence(conn, ["!re"] + [f"={k}={wire(item[k])}" for k in keys if k in item])
+        write_sentence(conn, ["!done"])
+
+    def _ppp_active_print(self, conn: socket.socket, args: list[str]) -> None:
+        if self.ppp_error:
+            write_sentence(conn, ["!trap", f"=message={self.ppp_error}"])
+            write_sentence(conn, ["!done"])
+            return
+        proplist = None
+        for a in args:
+            if a.startswith("=.proplist="):
+                proplist = a.split("=", 2)[2].split(",")
+        with self._lock:
+            rows = [dict(r) for r in self.ppp_active]
+        for n, item in enumerate(rows, start=1):
+            item[".id"] = f"*{n:X}"
             keys = [".id"] + (proplist if proplist else [k for k in item if k != ".id"])
             write_sentence(conn, ["!re"] + [f"={k}={wire(item[k])}" for k in keys if k in item])
         write_sentence(conn, ["!done"])

@@ -182,3 +182,77 @@ def test_poller_sync_starts_and_stops_workers_with_router_table():
     finally:
         poller.stop()
         server.stop()
+
+
+# ------------------------------------------------------------------------- PPPoE
+
+
+def active(db):
+    return db.query("SELECT kind, iface FROM alerts WHERE resolved_at IS NULL")
+
+
+def ppp(name, i, service="pppoe"):
+    return {"name": name, "service": service, "address": f"10.20.0.{i}",
+            "caller-id": f"AA:BB:CC:00:00:{i:02X}", "uptime": "1h2m3s"}
+
+
+def test_fetch_pppoe_active_reads_only_pppoe_sessions(server):
+    server.ppp_active = [ppp("ana", 1), ppp("beto", 2), ppp("vpn-user", 3, service="l2tp")]
+    c = RouterClient(router_for(server))
+    c.connect()
+    rows = c.fetch_pppoe_active()
+    c.close()
+    assert sorted(r["name"] for r in rows) == ["ana", "beto"]
+    assert rows[0]["caller-id"].startswith("AA:BB") and rows[0]["address"].startswith("10.20.")
+
+
+def test_poller_detects_pppoe_disconnect_over_the_wire_and_reconnect():
+    from app.pppoe import PPPoEMonitor
+
+    server = FakeRouterOS()
+    server.ppp_active = [ppp(f"cli{i}", i) for i in range(1, 11)]
+    db = DB(":memory:")
+    db.set_settings({"poll_interval": 2, "pppoe_poll_s": 1, "pppoe_grace_s": 1, "pppoe_mass_threshold": 0})
+    engine = Engine(db)
+    pppoe = PPPoEMonitor(db, engine)
+    db.execute(
+        "INSERT INTO routers(name, host, port, username, password, updated_at) VALUES(?,?,?,?,?,?)",
+        ("Fake", "127.0.0.1", server.port, "mkmonitor", "secret", time.time()),
+    )
+    poller = Poller(db, engine, pppoe=pppoe)
+    poller.start()
+    try:
+        assert wait_for(lambda: (pppoe.summary().get(1) or {}).get("online") == 10, 10)
+        server.ppp_active = [r for r in server.ppp_active if r["name"] != "cli3"]
+        assert wait_for(lambda: any(a["kind"] == "pppoe_down" and a["iface"] == "cli3"
+                                    for a in active(db)), 15), "no alertó la desconexión"
+        assert (pppoe.summary()[1]["down"]) == 1
+        server.ppp_active.append(ppp("cli3", 3))
+        assert wait_for(lambda: not any(a["kind"] == "pppoe_down" for a in active(db)), 15)
+    finally:
+        poller.stop()
+        server.stop()
+
+
+def test_pppoe_permission_error_does_not_mark_router_down():
+    from app.pppoe import PPPoEMonitor
+
+    server = FakeRouterOS()
+    server.ppp_error = "not enough permissions (9)"
+    db = DB(":memory:")
+    db.set_settings({"poll_interval": 2, "pppoe_poll_s": 1})
+    engine = Engine(db)
+    pppoe = PPPoEMonitor(db, engine)
+    db.execute(
+        "INSERT INTO routers(name, host, port, username, password, updated_at) VALUES(?,?,?,?,?,?)",
+        ("Fake", "127.0.0.1", server.port, "mkmonitor", "secret", time.time()),
+    )
+    poller = Poller(db, engine, pppoe=pppoe)
+    poller.start()
+    try:
+        assert wait_for(lambda: (pppoe.summary().get(1) or {}).get("error"), 10)
+        assert engine.snapshot()[1]["reachable"] is True
+        assert not any(a["kind"] == "router_down" for a in active(db))
+    finally:
+        poller.stop()
+        server.stop()

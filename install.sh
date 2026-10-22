@@ -83,6 +83,7 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 IP="${IP:-IP-DEL-SERVIDOR}"
 printf '\n\033[1;32mListo. MK Monitor está corriendo.\033[0m\n\n'
 printf '  Panel:      http://%s:%s\n' "$IP" "$PORT"
+printf '  Log PPPoE:  UDP %s (abrilo en el firewall si lo usás)\n' "$(grep -E '^MKMON_SYSLOG_PORT=' "$ENV_FILE" | cut -d= -f2 | grep . || echo 5140)"
 if [ "$FIRST_INSTALL" -eq 1 ]; then
   printf '  Usuario:    admin\n  Contraseña: %s\n\n' "$ADMIN_PASS"
   printf '  (Quedan guardados en %s)\n' "$ENV_FILE"

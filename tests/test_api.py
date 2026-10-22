@@ -14,7 +14,7 @@ TOKEN = "tok-123"
 def make_cfg(**over):
     base = dict(host="127.0.0.1", port=8080, db_path=":memory:", admin_user="admin",
                 admin_password="pw-admin", register_token=TOKEN, public_view=False, demo=False,
-                telegram_token="", telegram_chat="")
+                telegram_token="", telegram_chat="", syslog_port=0)
     base.update(over)
     return Config(**base)
 
@@ -239,7 +239,8 @@ def test_state_contains_live_interfaces_and_info(client, app):
     assert r["reachable"] is True and r["name"] == "Core"
     i = r["ifaces"][0]
     assert i["name"] == "ether1" and 79e6 < i["rx_bps"] < 81e6 and 19e6 < i["tx_bps"] < 21e6
-    assert data["info"] == {"version": "1.0.0", "demo": False, "telegram": False, "public_view": False}
+    assert data["info"] == {"version": "1.0.0", "demo": False, "telegram": False, "public_view": False,
+                            "syslog_port": 0, "syslog_listening": False}
 
 
 def test_interfaces_are_sorted_naturally(client, app):
@@ -353,3 +354,93 @@ def test_html_in_labels_is_not_executed_by_the_ui_contract(client, app):
     app.state.engine.process_poll({"id": rid, "name": "Core", "host": "h"}, [row], now=time.time())
     js = client.get("/app.js").text
     assert "esc(i.label)" in js and "esc(a.message)" in js and "esc(r.name)" in js
+
+
+# ------------------------------------------------------------------------- PPPoE
+
+
+def pppoe_rows(n, skip=()):
+    return [{"name": f"cli{i:03d}", "service": "pppoe", "address": f"10.0.0.{i}",
+             "caller-id": f"AA:BB:CC:00:00:{i:02X}", "uptime": "1h"} for i in range(1, n + 1) if i not in skip]
+
+
+def test_router_pppoe_fields_roundtrip_and_defaults(client):
+    rid = add_router(client)
+    r = [x for x in client.get("/api/routers").json() if x["id"] == rid][0]
+    assert r["pppoe_enabled"] in (True, 1) and r["syslog_ip"] == ""
+    assert client.put(f"/api/routers/{rid}", json={"name": "Core", "host": "10.0.0.1", "port": 8728,
+                      "username": "mkmonitor", "pppoe_enabled": False, "syslog_ip": "10.9.9.9"}).status_code == 200
+    r = [x for x in client.get("/api/routers").json() if x["id"] == rid][0]
+    assert not r["pppoe_enabled"] and r["syslog_ip"] == "10.9.9.9"
+
+
+def test_pppoe_endpoints_require_login_and_admin_for_syslog(app):
+    with TestClient(app) as c:
+        for p in ("summary", "down", "search?q=ab", "events", "syslog"):
+            assert c.get(f"/api/pppoe/{p}").status_code == 401, p
+
+
+def test_pppoe_summary_down_search_and_events(client, app):
+    rid = add_router(client)
+    router = {"id": rid, "name": "Core", "host": "10.0.0.1"}
+    pppoe = app.state.pppoe
+    t = time.time()
+    pppoe.process_active(router, pppoe_rows(5), t)
+    pppoe.process_active(router, pppoe_rows(5, skip=(2,)), t + 5)
+    pppoe.on_syslog("10.0.0.1", "pppoe,ppp,info <pppoe-cli002>: terminating... - peer is not responding", t + 6)
+    pppoe.process_active(router, pppoe_rows(5, skip=(2,)), t + 200)       # pasó la gracia
+    s = client.get("/api/pppoe/summary").json()
+    assert s["routers"][0]["online"] == 4 and s["routers"][0]["down"] == 1
+    assert s["syslog"]["listening"] is False
+    d = client.get("/api/pppoe/down").json()
+    assert d["total"] == 1 and d["sessions"][0]["name"] == "cli002"
+    assert d["sessions"][0]["router"] == "Core" and d["sessions"][0]["status"] == "alert"
+    assert "responde" in d["sessions"][0]["reason_es"]
+    assert client.get(f"/api/pppoe/down?router_id={rid + 99}").json()["total"] == 0
+    assert [x["name"] for x in client.get("/api/pppoe/search?q=CLI00").json()["sessions"]][:1] != []
+    assert client.get("/api/pppoe/search?q=c").json()["sessions"] == []   # mínimo 2 letras
+    ev = client.get("/api/pppoe/events").json()["events"]
+    assert ev and ev[0]["user"] == "cli002" and ev[0]["router"] == "Core" and ev[0]["reason_es"]
+    st = client.get("/api/state").json()["routers"][0]
+    assert st["pppoe"]["down"] == 1 and st["pppoe_enabled"]
+    alerts = client.get("/api/alerts").json()
+    assert any(a["kind"] == "pppoe_down" for a in (alerts["alerts"] if isinstance(alerts, dict) else alerts))
+
+
+def test_deleting_router_clears_its_pppoe_alerts(client, app):
+    rid = add_router(client)
+    router = {"id": rid, "name": "Core", "host": "10.0.0.1"}
+    t = time.time()
+    app.state.pppoe.process_active(router, pppoe_rows(3), t)
+    app.state.pppoe.process_active(router, pppoe_rows(3, skip=(1,)), t + 5)
+    app.state.pppoe.process_active(router, pppoe_rows(3, skip=(1,)), t + 200)
+    assert client.delete(f"/api/routers/{rid}").status_code == 200
+    assert client.get("/api/pppoe/down").json()["total"] == 0
+    assert app.state.db.query("SELECT 1 FROM alerts WHERE kind='pppoe_down' AND resolved_at IS NULL") == []
+
+
+def test_connect_script_includes_syslog_port(client):
+    body = client.get("/api/connect-script").text
+    assert "__SYSLOG_PORT__" not in body and "syslogPort" in body
+
+
+def test_old_database_is_migrated_without_losing_routers(tmp_path):
+    import sqlite3
+    from app.db import DB
+
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.executescript("""
+    CREATE TABLE routers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, host TEXT NOT NULL,
+      port INTEGER NOT NULL DEFAULT 8728, username TEXT NOT NULL, password TEXT NOT NULL,
+      use_ssl INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+      types TEXT NOT NULL DEFAULT 'ether', include TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL DEFAULT 0);
+    INSERT INTO routers(name, host, username, password) VALUES('Viejo','1.2.3.4','u','p');
+    """)
+    con.commit()
+    con.close()
+    db = DB(path)
+    r = db.query("SELECT name, pppoe_enabled, syslog_ip FROM routers")[0]
+    assert r["name"] == "Viejo" and r["pppoe_enabled"] == 1 and r["syslog_ip"] == ""
+    assert db.query("SELECT COUNT(*) AS n FROM pppoe_sessions")[0]["n"] == 0
+    DB(path)  # reabrir no falla (migración idempotente)

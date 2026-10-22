@@ -9,7 +9,9 @@
 #      SOLO de lectura (no puede cambiar nada del router).
 #   2. Habilita la API (puerto 8728) y la limita a la IP del servidor.
 #      OJO: si ya limitabas la API a otras IPs, esa lista se reemplaza.
-#   3. Le avisa al servidor de MK Monitor para que empiece a monitorear.
+#   3. Envía el log de PPPoE al servidor (UDP): sirve para saber el MOTIVO de
+#      cada desconexión de cliente. Si no querés esto, borrá el paso 3.
+#   4. Le avisa al servidor de MK Monitor para que empiece a monitorear.
 #
 #  La contraseña del usuario se genera al azar y viaja una sola vez al servidor
 #  por la red de gestión. Usalo en una red de confianza (LAN / VLAN de gestión).
@@ -19,6 +21,7 @@
 :local serverUrl "__SERVER_URL__"
 :local serverIp "__SERVER_IP__"
 :local token "__TOKEN__"
+:local syslogPort __SYSLOG_PORT__
 
 # --- Opcional: cambiar solo si hace falta ---
 :local apiUser "mkmonitor"
@@ -46,7 +49,20 @@
   /ip service set api address=($serverIp . "/32")
 }
 
-# 3) Avisar al servidor
+# 3) Log de PPPoE hacia el servidor (solo si se conoce su IP y el syslog está activo)
+:if (($serverIp != "") && ($syslogPort > 0)) do={
+  :if ([:len [/system logging action find name="mkmonitor"]] = 0) do={
+    /system logging action add name="mkmonitor" target=remote remote=$serverIp remote-port=$syslogPort
+  } else={
+    /system logging action set [find name="mkmonitor"] remote=$serverIp remote-port=$syslogPort
+  }
+  :if ([:len [/system logging find action="mkmonitor"]] = 0) do={
+    /system logging add topics=pppoe action="mkmonitor"
+    /system logging add topics=account action="mkmonitor"
+  }
+}
+
+# 4) Avisar al servidor
 :local ident [/system identity get name]
 :local hostPart ""
 :if ($mgmtIp != "") do={ :set hostPart (",\"host\":\"" . $mgmtIp . "\"") }

@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS routers(
     include TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     updated_at REAL NOT NULL,
+    pppoe_enabled INTEGER NOT NULL DEFAULT 1,
+    syslog_ip TEXT NOT NULL DEFAULT '',
     UNIQUE(host, port)
 );
 
@@ -69,7 +71,39 @@ CREATE TABLE IF NOT EXISTS baselines(
     updated_at REAL NOT NULL,
     PRIMARY KEY(router_id, iface)
 );
+
+CREATE TABLE IF NOT EXISTS pppoe_sessions(
+    router_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',
+    caller_id TEXT NOT NULL DEFAULT '',
+    since REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    alerted INTEGER NOT NULL DEFAULT 0,
+    was_up_s REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY(router_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_pppoe_state ON pppoe_sessions(router_id, state);
+
+CREATE TABLE IF NOT EXISTS pppoe_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    router_id INTEGER NOT NULL,
+    ts REAL NOT NULL,
+    user TEXT NOT NULL,
+    event TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_pppoe_events_ts ON pppoe_events(ts);
+CREATE INDEX IF NOT EXISTS idx_pppoe_events_user ON pppoe_events(router_id, user, ts);
 """
+
+# Columnas agregadas después de la primera versión: se suman a bases ya existentes.
+MIGRATIONS = [
+    ("routers", "pppoe_enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ("routers", "syslog_ip", "TEXT NOT NULL DEFAULT ''"),
+]
 
 # Valores por defecto de la configuración global. Se editan desde el panel.
 DEFAULT_SETTINGS: dict[str, float] = {
@@ -88,6 +122,12 @@ DEFAULT_SETTINGS: dict[str, float] = {
     "router_down_after": 3,      # lecturas fallidas seguidas para dar el router por caído
     "sample_every_s": 30,        # cada cuánto se guarda un punto del historial
     "retention_days": 7,         # días de historial de tráfico que se conservan
+    "pppoe_enabled": 1,          # monitoreo de desconexiones PPPoE (1 = sí)
+    "pppoe_poll_s": 15,          # cada cuántos segundos se lee /ppp/active
+    "pppoe_grace_s": 60,         # un cliente debe seguir caído este tiempo para alertar
+    "pppoe_mass_threshold": 20,  # desconexiones en la ventana para tratarlo como caída masiva
+    "pppoe_mass_window_s": 60,   # ventana (s) para detectar la caída masiva
+    "pppoe_expire_h": 24,        # horas que una alerta de cliente caído queda activa
 }
 
 
@@ -104,6 +144,13 @@ class DB:
                 self._conn.execute("PRAGMA journal_mode=WAL")
                 self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        for table, column, ddl in MIGRATIONS:
+            cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def execute(self, sql: str, params: tuple | list = ()) -> sqlite3.Cursor:
         with self._lock:

@@ -13,6 +13,8 @@ const KIND_ES = {
   anomaly_rx: "Consumo anormal RX",
   anomaly_tx: "Consumo anormal TX",
   router_down: "Router sin respuesta",
+  pppoe_down: "Cliente PPPoE caído",
+  pppoe_mass: "Caída masiva PPPoE",
 };
 
 function fmtRate(bps) {
@@ -141,9 +143,13 @@ function onState() {
   if (fresh.length) {
     beep(fresh.some((a) => a.severity === "critical"));
     lastRepeat = now;
-  } else if (unacked.length && now - lastRepeat > 30000) {
-    beep(unacked.some((a) => a.severity === "critical"));
-    lastRepeat = now;
+  } else if (now - lastRepeat > 30000) {
+    // Las alertas de clientes PPPoE sueltos suenan al aparecer, pero no se repiten.
+    const loud = unacked.filter((a) => a.kind !== "pppoe_down");
+    if (loud.length) {
+      beep(loud.some((a) => a.severity === "critical"));
+      lastRepeat = now;
+    }
   }
 
   if (tab === "panel") renderPanel();
@@ -239,8 +245,14 @@ function routerHTML(r) {
   const tiles = r.ifaces.length
     ? r.ifaces.map((i) => tileHTML(r, i)).join("")
     : '<div class="muted">Todavía no hay interfaces leídas de este router.</div>';
+  let pp = "";
+  const ps = r.pppoe_enabled && r.pppoe;
+  if (ps && ps.online + ps.down > 0) {
+    const cls = ps.mass ? "pill crit" : ps.down ? "pill warn" : "pill";
+    pp = `<span class="${cls}" data-tabgo="pppoe" style="cursor:pointer">PPPoE ${ps.online} en línea${ps.down ? " · " + ps.down + " caídos" : ""}${ps.mass ? " · CAÍDA MASIVA" : ""}</span>`;
+  }
   return `<div class="router"><div class="router-head"><h2>${esc(r.name)}</h2>
-    <span class="host">${esc(r.host)}:${r.port}</span>${state}</div>${err}
+    <span class="host">${esc(r.host)}:${r.port}</span>${state}${pp}</div>${err}
     <div class="grid">${tiles}</div></div>`;
 }
 
@@ -252,7 +264,17 @@ function renderPanel() {
     const unacked = S.alerts.filter((a) => !a.acked_at).length;
     const head = `<div class="alerts-head"><h2>Alertas activas (${S.alerts.length})</h2>
       ${unacked > 1 ? '<button class="ghost small" data-ackall="1">Reconocer todas</button>' : ""}</div>`;
-    box.innerHTML = head + S.alerts.map(alertHTML).join("");
+    const pppoe = S.alerts.filter((a) => a.kind === "pppoe_down");
+    const others = S.alerts.filter((a) => a.kind !== "pppoe_down");
+    const shown = pppoe.slice(0, 5);
+    let html = head + others.map(alertHTML).join("") + shown.map(alertHTML).join("");
+    if (pppoe.length > shown.length) {
+      html += `<div class="alert warning more"><div class="icon">🟠</div>
+        <div><div class="where">+ ${pppoe.length - shown.length} clientes PPPoE más desconectados</div>
+        <div class="msg">Se muestran los 5 más recientes.</div></div>
+        <div class="actions"><button class="ghost small" data-tabgo="pppoe">Ver todos</button></div></div>`;
+    }
+    box.innerHTML = html;
   }
   const enabled = S.routers.filter((r) => r.enabled);
   $("#routers").innerHTML = enabled.length
@@ -339,6 +361,140 @@ function closeModal() {
   M = null;
 }
 
+/* -------------------------------------------------------------------- PPPoE */
+
+const STATUS_ES = { up: "conectado", alert: "ALERTA", grace: "en espera", mass: "caída masiva" };
+
+function ago(ts, now) {
+  return ts ? "hace " + fmtDur(now - ts) : "—";
+}
+
+function reasonHTML(r) {
+  if (!r.reason) return '<span class="muted">—</span>';
+  return r.reason_es ? `${esc(r.reason_es)} <span class="muted">(${esc(r.reason)})</span>` : esc(r.reason);
+}
+
+function pppoeSummaryHTML(sum) {
+  const cards = sum.routers
+    .map((r) => {
+      if (!r.monitored) {
+        return `<div class="pcard"><h3>${esc(r.name)}</h3><div class="sub">PPPoE no se monitorea en este router.</div></div>`;
+      }
+      if (r.online == null) {
+        return `<div class="pcard"><h3>${esc(r.name)}</h3><div class="sub">${r.error ? esc(r.error) : "Esperando la primera lectura…"}</div></div>`;
+      }
+      const cls = r.mass ? "pcard mass" : r.down ? "pcard warn" : "pcard";
+      return `<div class="pcard ${cls.replace("pcard", "")}"><h3>${esc(r.name)}${r.mass ? ' <span class="pill crit">CAÍDA MASIVA</span>' : ""}</h3>
+        <div class="big">${r.online}</div><div class="sub">clientes en línea</div>
+        <div class="sub" style="margin-top:.3rem"><span class="${r.down ? "down-n" : ""}">${r.down} desconectados</span>
+        · lectura ${ago(r.last_poll, sum.now)}</div>${r.error ? `<div class="router-err">${esc(r.error)}</div>` : ""}</div>`;
+    })
+    .join("");
+  return cards || '<div class="muted">Sin routers.</div>';
+}
+
+function syslogLine(sl) {
+  if (!sl.listening) {
+    return sl.error
+      ? `Log del MikroTik: <span class="router-err">no se pudo abrir el puerto UDP ${sl.port} (${esc(sl.error)})</span>. Las alertas funcionan igual, pero sin el motivo de la desconexión.`
+      : "Log del MikroTik: apagado (las alertas funcionan igual, pero sin el motivo de la desconexión).";
+  }
+  if (!sl.received) {
+    return `Log del MikroTik: escuchando en UDP ${sl.port}, <b>todavía no llegó ninguna línea</b>. Corré el script de conexión en el router o revisá que el firewall deje pasar UDP ${sl.port}.`;
+  }
+  return `Log del MikroTik: UDP ${sl.port} · ${sl.received} líneas recibidas, ${sl.parsed} interpretadas.`;
+}
+
+function downTableHTML(res) {
+  if (!res.sessions.length) return '<p class="muted">Ningún cliente desconectado. ✅</p>';
+  const rows = res.sessions
+    .map(
+      (r) => `<tr><td><b>${esc(r.name)}</b></td><td><span class="st ${r.status}">${STATUS_ES[r.status]}</span></td>
+      <td>${ago(r.since, res.now)}</td><td class="wrap">${reasonHTML(r)}</td>
+      <td class="mono">${esc(r.address)}</td><td class="mono">${esc(r.caller_id)}</td><td>${esc(r.router)}</td></tr>`
+    )
+    .join("");
+  return `<table><thead><tr><th>Cliente</th><th>Estado</th><th>Caído</th><th>Motivo</th><th>IP</th><th>MAC</th><th>Router</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function eventsTableHTML(res) {
+  if (!res.events.length) return '<p class="muted">Todavía no hubo desconexiones.</p>';
+  const rows = res.events
+    .map(
+      (e) => `<tr><td>${fmtDateTime(e.ts)}</td><td>${esc(e.router || "?")}</td><td><b>${esc(e.user)}</b></td>
+      <td class="wrap">${reasonHTML(e)}</td></tr>`
+    )
+    .join("");
+  return `<table><thead><tr><th>Hora</th><th>Router</th><th>Cliente</th><th>Motivo</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function searchTableHTML(res) {
+  if (!res.sessions.length) return '<p class="muted">Sin resultados.</p>';
+  const rows = res.sessions
+    .map((r) => {
+      const state = r.state === "up" ? `<span class="st up">conectado</span>` : `<span class="st ${r.status}">${STATUS_ES[r.status]}</span>`;
+      const since = r.state === "up" ? "conectado " + fmtDur(r.was_up_s) : ago(r.since, res.now);
+      return `<tr><td><b>${esc(r.name)}</b></td><td>${state}</td><td>${since}</td><td class="mono">${esc(r.address)}</td>
+        <td class="mono">${esc(r.caller_id)}</td><td>${esc(r.router)}</td><td class="wrap">${r.state === "down" ? reasonHTML(r) : ""}</td></tr>`;
+    })
+    .join("");
+  return `<table><thead><tr><th>Cliente</th><th>Estado</th><th>Tiempo</th><th>IP</th><th>MAC</th><th>Router</th><th>Motivo</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+let pppoeKnownRouters = "";
+
+async function renderPppoe() {
+  try {
+    const sel = $("#pppoeRouter");
+    const rid = sel.value;
+    const qs = rid ? `&router_id=${rid}` : "";
+    const [sum, down, ev] = await Promise.all([
+      api("/api/pppoe/summary"),
+      api(`/api/pppoe/down?limit=300${qs}`),
+      api(`/api/pppoe/events?limit=100${qs}`),
+    ]);
+    const key = sum.routers.map((r) => r.id + r.name).join("|");
+    if (key !== pppoeKnownRouters) {
+      pppoeKnownRouters = key;
+      sel.innerHTML = '<option value="">todos</option>' + sum.routers.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+      sel.value = rid;
+    }
+    $("#pppoeSummary").innerHTML = pppoeSummaryHTML(sum);
+    $("#pppoeSyslog").innerHTML = syslogLine(sum.syslog);
+    $("#pppoeDownCount").textContent = down.total ? `(${down.total})` : "";
+    $("#pppoeDown").innerHTML = downTableHTML(down);
+    $("#pppoeEvents").innerHTML = eventsTableHTML(ev);
+    if ($("#pppoeLogBox").open) renderPppoeLog();
+  } catch (e) {
+    $("#pppoeSummary").innerHTML = `<div class="card router-err">${esc(e.message)}</div>`;
+  }
+}
+
+async function renderPppoeSearch() {
+  const q = $("#pppoeQ").value.trim();
+  const box = $("#pppoeSearch");
+  if (q.length < 2) { box.innerHTML = ""; return; }
+  try {
+    box.innerHTML = searchTableHTML(await api(`/api/pppoe/search?q=${encodeURIComponent(q)}`));
+  } catch (e) {
+    box.innerHTML = `<p class="router-err">${esc(e.message)}</p>`;
+  }
+}
+
+async function renderPppoeLog() {
+  const box = $("#pppoeLog");
+  try {
+    const sl = await api("/api/pppoe/syslog");
+    box.innerHTML = sl.lines.length
+      ? `<table><thead><tr><th>Hora</th><th>Desde</th><th>Línea</th><th>¿Interpretada?</th></tr></thead><tbody>${sl.lines
+          .map((l) => `<tr><td>${fmtDateTime(l.ts)}</td><td class="mono">${esc(l.ip)}</td><td class="mono wrap">${esc(l.text)}</td><td>${l.parsed ? "sí" : "—"}</td></tr>`)
+          .join("")}</tbody></table>`
+      : '<p class="muted">Todavía no llegó ninguna línea.</p>';
+  } catch (e) {
+    box.innerHTML = `<p class="router-err">${esc(e.message)}</p>`;
+  }
+}
+
 /* ---------------------------------------------------------------- historial */
 
 async function renderHistory() {
@@ -383,6 +539,12 @@ const SETTING_FIELDS = [
   ["router_down_after", "Lecturas fallidas para marcar caído", "Cuántas lecturas seguidas sin respuesta antes de alertar."],
   ["sample_every_s", "Intervalo del historial (s)", "Cada cuánto se guarda un punto para los gráficos."],
   ["retention_days", "Días de historial", "Los puntos más viejos se borran solos."],
+  ["pppoe_enabled", "Monitorear PPPoE (1 = sí, 0 = no)", "Apaga todo el monitoreo de clientes PPPoE."],
+  ["pppoe_poll_s", "Lectura de clientes PPPoE (s)", "Cada cuántos segundos se lee la lista de clientes conectados."],
+  ["pppoe_grace_s", "Segundos caído antes de alertar", "Si el cliente se reconecta antes, no se alerta: en PPPoE es normal."],
+  ["pppoe_mass_threshold", "Clientes caídos a la vez = caída masiva", "Se avisa UNA alerta crítica en vez de una por cliente. 0 = desactivado."],
+  ["pppoe_mass_window_s", "Ventana de la caída masiva (s)", "Tiempo en el que se cuentan las desconexiones."],
+  ["pppoe_expire_h", "Horas hasta dar por vencida una alerta", "Los clientes que no vuelven (bajas) dejan de alertar pasado este tiempo."],
 ];
 
 let cfgRouter = null;
@@ -403,7 +565,7 @@ async function renderConfig() {
         const live = S && S.routers.find((x) => x.id === r.id);
         const st = !r.enabled ? "deshabilitado" : live && live.reachable === true ? "en línea" : live && live.reachable === false ? "sin respuesta" : "conectando…";
         return `<tr><td><b>${esc(r.name)}</b></td><td>${esc(r.host)}:${r.port}${r.use_ssl ? " (SSL)" : ""}</td>
-          <td>${esc(r.username)}</td><td>${esc(r.types)}${r.include ? " + " + esc(r.include) : ""}</td><td>${st}</td>
+          <td>${esc(r.username)}</td><td>${esc(r.types)}${r.include ? " + " + esc(r.include) : ""}</td><td>${r.pppoe_enabled ? "sí" : "—"}</td><td>${st}</td>
           <td class="row"><button class="ghost small" data-edit="${r.id}">Editar</button>
           <button class="ghost small" data-testid="${r.id}">Probar</button>
           <button class="danger small" data-del="${r.id}">Eliminar</button></td></tr>`;
@@ -428,7 +590,7 @@ async function renderConfig() {
         <pre class="script" id="scriptText">${esc(script)}</pre></div>
 
       <div class="card"><h2>Routers</h2>
-        <div class="tablewrap">${routers.length ? `<table><thead><tr><th>Nombre</th><th>Dirección</th><th>Usuario API</th><th>Tipos leídos</th><th>Estado</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">Sin routers todavía.</p>'}</div>
+        <div class="tablewrap">${routers.length ? `<table><thead><tr><th>Nombre</th><th>Dirección</th><th>Usuario API</th><th>Tipos leídos</th><th>PPPoE</th><th>Estado</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">Sin routers todavía.</p>'}</div>
         <h3 style="margin-top:1rem" id="formTitle">Agregar manualmente</h3>
         <div class="form-grid" id="routerForm">
           <div class="field"><label>Nombre</label><input id="f_name" placeholder="Core-Principal"></div>
@@ -440,6 +602,8 @@ async function renderConfig() {
           <div class="field"><label>Interfaces extra por nombre</label><input id="f_include" placeholder="bridge1, bonding1"><small>Opcional.</small></div>
           <div class="field"><label>Usar SSL</label><select id="f_ssl"><option value="0">No</option><option value="1">Sí</option></select></div>
           <div class="field"><label>Monitoreo</label><select id="f_enabled"><option value="1">Activo</option><option value="0">Pausado</option></select></div>
+          <div class="field"><label>Clientes PPPoE</label><select id="f_pppoe"><option value="1">Monitorear</option><option value="0">No monitorear</option></select></div>
+          <div class="field"><label>IP de origen del syslog</label><input id="f_syslog" placeholder="(igual a la IP del router)"><small>Solo si el router manda el log desde otra IP.</small></div>
         </div>
         <div class="row" style="margin-top:.8rem"><button id="saveRouter">Guardar</button>
           <button class="ghost" id="testForm">Probar conexión</button>
@@ -458,7 +622,9 @@ async function renderConfig() {
 
       <div class="card"><h2>Notificaciones</h2>
         <p>Telegram: <b>${S && S.info.telegram ? "configurado" : "sin configurar"}</b>.
-        Se activa con <code>MKMON_TELEGRAM_TOKEN</code> y <code>MKMON_TELEGRAM_CHAT</code> en <code>/etc/mk-monitor/mk-monitor.env</code>.</p></div>`;
+        Se activa con <code>MKMON_TELEGRAM_TOKEN</code> y <code>MKMON_TELEGRAM_CHAT</code> en <code>/etc/mk-monitor/mk-monitor.env</code>.</p>
+        <p>Log de PPPoE (syslog UDP): <b>${S && S.info.syslog_listening ? "escuchando en el puerto " + S.info.syslog_port : "apagado"}</b>.
+        Se cambia con <code>MKMON_SYSLOG_PORT</code> (0 = apagado).</p></div>`;
 
     if (cfgRouter != null) renderIfaces();
   } catch (e) {
@@ -504,6 +670,8 @@ function formData() {
     include: $("#f_include").value.trim(),
     use_ssl: $("#f_ssl").value === "1",
     enabled: $("#f_enabled").value === "1",
+    pppoe_enabled: $("#f_pppoe").value === "1",
+    syslog_ip: $("#f_syslog").value.trim(),
   };
 }
 
@@ -517,6 +685,8 @@ function fillForm(r) {
   $("#f_include").value = r.include;
   $("#f_ssl").value = r.use_ssl ? "1" : "0";
   $("#f_enabled").value = r.enabled ? "1" : "0";
+  $("#f_pppoe").value = r.pppoe_enabled ? "1" : "0";
+  $("#f_syslog").value = r.syslog_ip || "";
   $("#f_passhelp").textContent = "Vacía = se mantiene la actual.";
   $("#formTitle").textContent = "Editar router";
   $("#cancelEdit").hidden = false;
@@ -543,18 +713,25 @@ async function runTest(payload) {
 
 /* ----------------------------------------------------------------- eventos */
 
+function showTab(name) {
+  tab = name;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  ["panel", "pppoe", "history", "config"].forEach((n) => ($("#tab-" + n).hidden = n !== name));
+  if (name === "panel" && S) renderPanel();
+  if (name === "pppoe") renderPppoe();
+  if (name === "history") renderHistory();
+  if (name === "config") renderConfig();
+}
+
 document.addEventListener("click", async (ev) => {
   const t = ev.target.closest("button, .tile");
   if (!t) return;
   ensureAudio();
   try {
     if (t.dataset.tab) {
-      tab = t.dataset.tab;
-      document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
-      ["panel", "history", "config"].forEach((n) => ($("#tab-" + n).hidden = n !== tab));
-      if (tab === "panel" && S) renderPanel();
-      if (tab === "history") renderHistory();
-      if (tab === "config") renderConfig();
+      showTab(t.dataset.tab);
+    } else if (t.dataset.tabgo) {
+      showTab(t.dataset.tabgo);
     } else if (t.id === "soundBtn") {
       soundOn = !soundOn;
       localStorage.setItem("mk_sound", soundOn ? "1" : "0");
@@ -637,7 +814,17 @@ document.addEventListener("click", async (ev) => {
 document.addEventListener("change", (ev) => {
   if (ev.target.id === "ifRouter") { cfgRouter = parseInt(ev.target.value, 10); renderIfaces(); }
   if (ev.target.id === "histFilter") renderHistory();
+  if (ev.target.id === "pppoeRouter") renderPppoe();
 });
+
+let searchTimer = null;
+document.addEventListener("input", (ev) => {
+  if (ev.target.id === "pppoeQ") {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderPppoeSearch, 300);
+  }
+});
+$("#pppoeLogBox").addEventListener("toggle", () => { if ($("#pppoeLogBox").open) renderPppoeLog(); });
 
 $("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") closeModal(); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeModal(); });
@@ -652,4 +839,7 @@ tickClock();
 setInterval(tickClock, 1000);
 setInterval(refresh, 3000);
 setInterval(() => { if (tab === "history") renderHistory(); }, 8000);
+setInterval(() => {
+  if (tab === "pppoe") { renderPppoe(); renderPppoeSearch(); }
+}, 5000);
 refresh();

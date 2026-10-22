@@ -13,6 +13,7 @@ from librouteros.query import Key, Or
 log = logging.getLogger("mkmonitor.poller")
 
 FIELDS = ("name", "type", "running", "disabled", "rx-byte", "tx-byte", "comment")
+PPP_FIELDS = ("name", "service", "address", "caller-id", "uptime")
 PRUNE_EVERY_S = 3600
 
 
@@ -68,6 +69,16 @@ class RouterClient:
         wanted_types, wanted_names = set(types), set(include)
         return [r for r in rows if r.get("type") in wanted_types or r.get("name") in wanted_names]
 
+    def fetch_pppoe_active(self) -> list[dict[str, Any]]:
+        """Sesiones PPPoE activas (/ppp/active).
+
+        No se filtra en el router a propósito: si el filtro fallara en silencio,
+        la lista vendría vacía y parecería que se cayeron todos los clientes.
+        """
+        keys = [Key(k) for k in PPP_FIELDS]
+        rows = list(self.api.path("ppp", "active").select(*keys))
+        return [r for r in rows if str(r.get("service", "")).lower() == "pppoe"]
+
     def close(self) -> None:
         if self.api is not None:
             try:
@@ -80,16 +91,46 @@ class RouterClient:
 class Worker(threading.Thread):
     """Un hilo por MikroTik: lee cada `poll_interval` segundos."""
 
-    def __init__(self, router: dict, db, engine, factory: Callable[[dict], Any]):
+    def __init__(self, router: dict, db, engine, factory: Callable[[dict], Any], pppoe=None):
         super().__init__(name=f"poll-{router['name']}", daemon=True)
         self.router = router
         self.db = db
         self.engine = engine
         self.factory = factory
+        self.pppoe = pppoe
+        self._last_pppoe = 0.0
+        self._pppoe_on = False
         self._stop_evt = threading.Event()
 
     def stop(self) -> None:
         self._stop_evt.set()
+
+    def _pppoe_step(self, client) -> None:
+        if self.pppoe is None:
+            return
+        s = self.db.get_settings()
+        enabled = bool(self.router.get("pppoe_enabled", 1)) and bool(s["pppoe_enabled"])
+        if not enabled:
+            if self._pppoe_on:
+                self.pppoe.forget_router(self.router["id"])
+                self._pppoe_on = False
+            return
+        now = time.time()
+        if now - self._last_pppoe < s["pppoe_poll_s"]:
+            return
+        self._last_pppoe = now
+        self._pppoe_on = True
+        try:
+            rows = client.fetch_pppoe_active()
+        except TrapError as exc:
+            # El router contestó con error (p. ej. sin permiso): no es una caída del router.
+            self.pppoe.process_error(self.router, exc)
+            return
+        self.pppoe.process_active(self.router, rows, now)
+        drain = getattr(client, "drain_log", None)
+        if drain is not None:  # modo demo: el "log" viene del cliente simulado
+            for user, event, reason in drain():
+                self.pppoe.on_log_event(self.router["id"], user, event, reason, now)
 
     def run(self) -> None:
         client = None
@@ -101,6 +142,7 @@ class Worker(threading.Thread):
                     client.connect()
                 rows = client.fetch_interfaces()
                 self.engine.process_poll(self.router, rows)
+                self._pppoe_step(client)
             except Exception as exc:  # noqa: BLE001
                 log.warning("[%s] fallo de lectura: %s", self.router["name"], exc)
                 self.engine.process_failure(self.router, exc)
@@ -114,10 +156,11 @@ class Worker(threading.Thread):
 
 
 class Poller:
-    def __init__(self, db, engine, factory: Callable[[dict], Any] = RouterClient):
+    def __init__(self, db, engine, factory: Callable[[dict], Any] = RouterClient, pppoe=None):
         self.db = db
         self.engine = engine
         self.factory = factory
+        self.pppoe = pppoe
         self.workers: dict[int, Worker] = {}
         self._lock = threading.Lock()
         self._stop_evt = threading.Event()
@@ -147,9 +190,11 @@ class Poller:
                     del self.workers[rid]
                     if row is None:
                         self.engine.forget_router(rid)
+                        if self.pppoe is not None:
+                            self.pppoe.forget_router(rid)
             for rid, row in rows.items():
                 if rid not in self.workers:
-                    worker = Worker(row, self.db, self.engine, self.factory)
+                    worker = Worker(row, self.db, self.engine, self.factory, self.pppoe)
                     self.workers[rid] = worker
                     worker.start()
 
@@ -159,6 +204,8 @@ class Poller:
                 self.sync()
                 if time.time() - self._last_prune >= PRUNE_EVERY_S:
                     self.engine.prune()
+                    if self.pppoe is not None:
+                        self.pppoe.prune()
                     self._last_prune = time.time()
             except Exception:  # noqa: BLE001
                 log.exception("Error en el supervisor")

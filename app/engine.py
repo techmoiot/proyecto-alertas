@@ -169,6 +169,50 @@ class Engine:
         if not quiet:
             self._notify(f"✅ [{info['router']}] Resuelto: {info['message']}")
 
+    # API pública para otros monitores (PPPoE) que comparten la tabla de alertas.
+
+    def fire_alert(
+        self,
+        router: dict,
+        iface: str,
+        kind: str,
+        severity: str,
+        message: str,
+        value: float | None = None,
+        now: float | None = None,
+    ) -> None:
+        with self._lock:
+            self._fire(router, iface, kind, severity, message, value,
+                       self.clock() if now is None else now)
+
+    def clear_alert(
+        self, rid: int, iface: str, kind: str, now: float | None = None, quiet: bool = False
+    ) -> None:
+        with self._lock:
+            self._clear(rid, iface, kind, self.clock() if now is None else now, quiet)
+
+    def clear_kinds(
+        self, rid: int, kinds: tuple[str, ...], quiet: bool = True, now: float | None = None
+    ) -> None:
+        """Resuelve todas las alertas activas de esos tipos en un router."""
+        with self._lock:
+            now = self.clock() if now is None else now
+            for key in [k for k in self.active if k[0] == rid and k[2] in kinds]:
+                self._clear(key[0], key[1], key[2], now, quiet)
+
+    def update_alert(
+        self, rid: int, iface: str, kind: str, message: str, value: float | None = None
+    ) -> None:
+        """Actualiza el texto de una alerta activa (sin avisar de nuevo)."""
+        with self._lock:
+            info = self.active.get((rid, iface, kind))
+            if info is None or info["message"] == message:
+                return
+            self.db.execute(
+                "UPDATE alerts SET message=?, value=? WHERE id=?", (message, value, info["id"])
+            )
+            info["message"] = message
+
     def _hold(self, st: IfaceState, rid: int, kind: str) -> Hold:
         hold = st.holds.get(kind)
         if hold is None:

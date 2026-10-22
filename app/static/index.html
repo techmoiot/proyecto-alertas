@@ -11,6 +11,7 @@
     <div class="brand"><span class="logo"></span>MK Monitor<span id="demoBadge" class="badge demo" hidden>DEMO</span></div>
     <nav id="tabs">
       <button data-tab="panel" class="active">Panel</button>
+      <button data-tab="pppoe">PPPoE</button>
       <button data-tab="history">Historial</button>
       <button data-tab="config">Configuración</button>
     </nav>
@@ -28,6 +29,37 @@
     <section id="tab-panel">
       <div id="alertsBox"></div>
       <div id="routers"></div>
+    </section>
+
+    <section id="tab-pppoe" hidden>
+      <div class="toolbar">
+        <h2>Clientes PPPoE</h2>
+        <label>Router <select id="pppoeRouter"><option value="">todos</option></select></label>
+      </div>
+      <div id="pppoeSummary" class="grid pppoe-cards"></div>
+      <div id="pppoeSyslog" class="muted" style="margin:.6rem 0 1.2rem"></div>
+
+      <div class="card">
+        <h2>Buscar un cliente</h2>
+        <input id="pppoeQ" type="search" placeholder="Usuario, IP o MAC (mínimo 2 letras)…" style="width:min(420px,100%)">
+        <div id="pppoeSearch" class="tablewrap" style="margin-top:.6rem"></div>
+      </div>
+
+      <div class="card">
+        <h2>Desconectados ahora <span id="pppoeDownCount" class="muted"></span></h2>
+        <div id="pppoeDown" class="tablewrap"></div>
+      </div>
+
+      <div class="card">
+        <h2>Últimas desconexiones</h2>
+        <div id="pppoeEvents" class="tablewrap"></div>
+      </div>
+
+      <details class="card" id="pppoeLogBox">
+        <summary>Log recibido del MikroTik (diagnóstico)</summary>
+        <p class="muted">Últimas líneas de syslog que llegaron al servidor. Si el motivo de las desconexiones no aparece, acá se ve cómo escribe el log tu RouterOS.</p>
+        <div id="pppoeLog" class="tablewrap"></div>
+      </details>
     </section>
 
     <section id="tab-history" hidden>

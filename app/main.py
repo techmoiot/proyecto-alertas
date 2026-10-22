@@ -21,6 +21,8 @@ from .demo import DemoClient, apply_demo
 from .engine import Engine
 from .notify import Notifier
 from .poller import Poller, RouterClient
+from .pppoe import PPPoEMonitor, explain_reason
+from .syslog import SyslogReceiver
 
 log = logging.getLogger("mkmonitor")
 
@@ -28,7 +30,9 @@ BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 SCRIPT_TEMPLATE = BASE.parent / "routeros" / "conectar-mikrotik.rsc"
 
-ROUTER_PUBLIC_FIELDS = "id, name, host, port, username, use_ssl, types, include, enabled"
+ROUTER_PUBLIC_FIELDS = (
+    "id, name, host, port, username, use_ssl, types, include, enabled, pppoe_enabled, syslog_ip"
+)
 
 
 class RouterIn(BaseModel):
@@ -41,6 +45,8 @@ class RouterIn(BaseModel):
     types: str = Field("ether", max_length=120)
     include: str = Field("", max_length=300)
     enabled: bool = True
+    pppoe_enabled: bool = True
+    syslog_ip: str = Field("", max_length=45)
 
 
 class RouterTest(RouterIn):
@@ -88,9 +94,11 @@ def create_app(
     db = DB(cfg.db_path)
     notifier = Notifier(cfg.telegram_token, cfg.telegram_chat)
     engine = Engine(db, notifier)
+    pppoe = PPPoEMonitor(db, engine)
+    syslog = SyslogReceiver(cfg.syslog_port, pppoe.on_syslog)
     if client_factory is None:
         client_factory = DemoClient if cfg.demo else RouterClient
-    poller = Poller(db, engine, client_factory)
+    poller = Poller(db, engine, client_factory, pppoe)
     if cfg.demo:
         apply_demo(db)
 
@@ -101,11 +109,14 @@ def create_app(
     async def lifespan(app: FastAPI):
         if start_poller:
             poller.start()
+            syslog.start()
         yield
         poller.stop()
+        syslog.stop()
 
     app = FastAPI(title="MK Monitor", version=__version__, lifespan=lifespan)
     app.state.db, app.state.engine, app.state.poller = db, engine, poller
+    app.state.pppoe, app.state.syslog = pppoe, syslog
     app.state.cfg, app.state.notifier = cfg, notifier
 
     basic = HTTPBasic(auto_error=False)
@@ -162,6 +173,7 @@ def create_app(
     @app.get("/api/state", dependencies=[Depends(viewer)])
     def state():
         snap = engine.snapshot()
+        pppoe_stats = pppoe.summary()
         routers = []
         for r in db.query(f"SELECT {ROUTER_PUBLIC_FIELDS} FROM routers ORDER BY name"):
             live = snap.get(r["id"])
@@ -171,6 +183,8 @@ def create_app(
                     **r,
                     "enabled": bool(r["enabled"]),
                     "use_ssl": bool(r["use_ssl"]),
+                    "pppoe_enabled": bool(r["pppoe_enabled"]),
+                    "pppoe": pppoe_stats.get(r["id"]),
                     "reachable": live["reachable"] if live else None,
                     "last_ok": live["last_ok"] if live else None,
                     "error": live["error"] if live else None,
@@ -192,6 +206,8 @@ def create_app(
                 "demo": cfg.demo,
                 "telegram": notifier.enabled,
                 "public_view": cfg.public_view,
+                "syslog_port": syslog.port,
+                "syslog_listening": syslog.snapshot()["listening"],
             },
         }
 
@@ -254,6 +270,8 @@ def create_app(
             "types": ",".join(p.strip() for p in body.types.split(",") if p.strip()) or "ether",
             "include": ",".join(p.strip() for p in body.include.split(",") if p.strip()),
             "enabled": int(body.enabled),
+            "pppoe_enabled": int(body.pppoe_enabled),
+            "syslog_ip": body.syslog_ip.strip(),
         }
 
     @app.post("/api/routers", dependencies=[Depends(admin)])
@@ -263,9 +281,10 @@ def create_app(
             raise HTTPException(409, "Ya existe un router con esa IP y puerto")
         cur = db.execute(
             "INSERT INTO routers(name, host, port, username, password, use_ssl, types, include, "
-            "enabled, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "enabled, updated_at, pppoe_enabled, syslog_ip) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (v["name"], v["host"], v["port"], v["username"], body.password, v["use_ssl"],
-             v["types"], v["include"], v["enabled"], time.time()),
+             v["types"], v["include"], v["enabled"], time.time(), v["pppoe_enabled"],
+             v["syslog_ip"]),
         )
         _sync()
         return {"id": cur.lastrowid}
@@ -284,9 +303,9 @@ def create_app(
         password = body.password or old["password"]
         db.execute(
             "UPDATE routers SET name=?, host=?, port=?, username=?, password=?, use_ssl=?, types=?, "
-            "include=?, enabled=?, updated_at=? WHERE id=?",
+            "include=?, enabled=?, updated_at=?, pppoe_enabled=?, syslog_ip=? WHERE id=?",
             (v["name"], v["host"], v["port"], v["username"], password, v["use_ssl"], v["types"],
-             v["include"], v["enabled"], time.time(), rid),
+             v["include"], v["enabled"], time.time(), v["pppoe_enabled"], v["syslog_ip"], rid),
         )
         _sync()
         return {"id": rid}
@@ -299,9 +318,9 @@ def create_app(
         for table in ("iface_config", "samples", "baselines"):
             db.execute(f"DELETE FROM {table} WHERE router_id=?", (rid,))
         if start_poller:
-            poller.sync()  # detiene el hilo y resuelve las alertas del router
-        else:
-            engine.forget_router(rid)
+            poller.sync()  # detiene el hilo del router
+        engine.forget_router(rid)   # resuelve sus alertas
+        pppoe.forget_router(rid)    # y olvida sus sesiones PPPoE
         return {"deleted": rid}
 
     @app.post("/api/routers/test", dependencies=[Depends(admin)])
@@ -380,6 +399,67 @@ def create_app(
             )
         return {"ok": True}
 
+    # ---------------------------------------------------------------------- PPPoE
+
+    def _with_reason(rows: list[dict]) -> list[dict]:
+        for r in rows:
+            r["reason_es"] = explain_reason(r.get("reason") or "")
+        return rows
+
+    @app.get("/api/pppoe/summary", dependencies=[Depends(viewer)])
+    def pppoe_summary():
+        stats = pppoe.summary()
+        routers = []
+        for r in db.query("SELECT id, name, enabled, pppoe_enabled FROM routers ORDER BY name"):
+            st = stats.get(r["id"]) or {}
+            routers.append({
+                "id": r["id"], "name": r["name"],
+                "monitored": bool(r["enabled"] and r["pppoe_enabled"]),
+                "online": st.get("online"), "down": st.get("down"),
+                "suppressed": st.get("suppressed"), "mass": st.get("mass", False),
+                "last_poll": st.get("last_poll"), "error": st.get("error"),
+            })
+        snap = syslog.snapshot()
+        return {"now": time.time(), "routers": routers,
+                "syslog": {k: snap[k] for k in ("port", "listening", "error", "received", "parsed")}}
+
+    @app.get("/api/pppoe/down", dependencies=[Depends(viewer)])
+    def pppoe_down(router_id: int | None = None, q: str = "", limit: int = 500):
+        rows = pppoe.down_sessions(router_id, q, max(1, min(limit, 2000)))
+        names = {r["id"]: r["name"] for r in db.query("SELECT id, name FROM routers")}
+        for r in rows:
+            r["router"] = names.get(r["router_id"], "?")
+        return {"now": time.time(), "total": len(rows), "sessions": rows}
+
+    @app.get("/api/pppoe/search", dependencies=[Depends(viewer)])
+    def pppoe_search(q: str = ""):
+        rows = pppoe.search(q)
+        names = {r["id"]: r["name"] for r in db.query("SELECT id, name FROM routers")}
+        for r in rows:
+            r["router"] = names.get(r["router_id"], "?")
+        return {"now": time.time(), "sessions": rows}
+
+    @app.get("/api/pppoe/events", dependencies=[Depends(viewer)])
+    def pppoe_events(router_id: int | None = None, q: str = "", limit: int = 200):
+        where, params = ["e.event = 'disconnect'"], []
+        if router_id is not None:
+            where.append("e.router_id = ?")
+            params.append(router_id)
+        if q.strip():
+            where.append("e.user LIKE ?")
+            params.append(f"%{q.strip()}%")
+        rows = db.query(
+            "SELECT e.ts, e.router_id, r.name AS router, e.user, e.reason FROM pppoe_events e "
+            f"LEFT JOIN routers r ON r.id = e.router_id WHERE {' AND '.join(where)} "
+            "ORDER BY e.ts DESC LIMIT ?",
+            (*params, max(1, min(limit, 1000))),
+        )
+        return {"now": time.time(), "events": _with_reason(rows)}
+
+    @app.get("/api/pppoe/syslog", dependencies=[Depends(admin)])
+    def pppoe_syslog():
+        return syslog.snapshot()
+
     # ------------------------------------------------------------ ajustes globales
 
     @app.get("/api/settings", dependencies=[Depends(admin)])
@@ -411,6 +491,7 @@ def create_app(
             text.replace("__SERVER_URL__", server_url)
             .replace("__SERVER_IP__", server_ip)
             .replace("__TOKEN__", register_token)
+            .replace("__SYSLOG_PORT__", str(cfg.syslog_port))
         )
         return PlainTextResponse(text)
 

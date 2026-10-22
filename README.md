@@ -10,12 +10,14 @@ pantalla, con sonido y color, cuando:
 | **Tope superado** | la entrada (RX) o salida (TX) pasa un tope fijo que configurás por interfaz |
 | **Consumo anormal** | una interfaz consume varias veces lo que consume habitualmente (aprende el promedio sola) |
 | **Router sin respuesta** | el MikroTik deja de contestar por la API |
+| **Cliente PPPoE desconectado** | un cliente que estaba conectado desaparece de `/ppp/active` (con el motivo, si llega el log) |
+| **Caída masiva PPPoE** | se caen muchos clientes a la vez: UNA alerta crítica en vez de cientos |
 
 Es liviano (Python + SQLite, sin Docker ni servicios externos): medido en pruebas,
 usa unos 55 MB de RAM con dos routers, así que entra en un LXC chico.
 
-> **Etapa 1 (esto):** interfaces físicas. **Etapa 2 (pendiente):** clientes PPPoE
-> (desconexiones por log, consumo por cliente). Ver [Próximos pasos](#próximos-pasos).
+> **Etapa 1:** interfaces físicas. **Etapa 2 (esto):** desconexiones de clientes PPPoE.
+> El consumo por cliente todavía no está. Ver [Próximos pasos](#próximos-pasos).
 
 ## Instalación en el LXC
 
@@ -79,6 +81,35 @@ Si querés incluir otra por nombre (`bridge1`, `bonding1`), agregala en
 Todos los umbrales se cambian en **Configuración → Umbrales y detección**, y cada
 interfaz puede tener su etiqueta, sus topes y su propio on/off.
 
+## Clientes PPPoE (desconexiones)
+
+Cada ~15 s se lee `/ppp/active` de cada router y se compara con la lectura anterior.
+Eso es lo que **decide** si un cliente está caído; el log del MikroTik solo agrega el
+**motivo**. Así, si el log llega en un formato raro, las alertas siguen funcionando.
+
+- **Gracia (60 s):** si el cliente vuelve antes, no se alerta (en PPPoE es habitual).
+- **Caída masiva:** si se caen 20 o más clientes en 60 s, sale una sola alerta crítica
+  que se va actualizando («quedan N sin volver») y no se crean alertas individuales.
+- **Vencimiento (24 h):** los clientes que no vuelven (bajas, cortes) dejan de alertar
+  pasado ese tiempo, pero siguen listados en la pestaña **PPPoE**.
+- Al reconectarse, la alerta se resuelve sola y sin mensaje de Telegram.
+- La pestaña **PPPoE** muestra clientes en línea por router, los caídos ahora con su
+  motivo, un buscador (usuario / IP / MAC) y las últimas desconexiones.
+- En el panel principal solo se muestran los 5 más recientes y un «Ver todos».
+
+**Motivo de la desconexión:** el script de conexión configura el MikroTik para enviar
+el log de PPPoE por syslog (UDP) a este servidor, puerto `5140` (`MKMON_SYSLOG_PORT`,
+`0` = apagado). Si hay firewall en el LXC, abrí **UDP 5140**. En la pestaña PPPoE hay
+un cuadro «Log recibido (diagnóstico)» que muestra lo que llega y si se entendió.
+
+> **Sin probar contra un RouterOS real:** el formato exacto de las líneas de log puede
+> variar. Si el motivo no aparece, copiá 3–4 líneas del cuadro de diagnóstico y se ajusta
+> el intérprete.
+
+Los routers que ya estaban conectados necesitan volver a correr el script (o agregar a
+mano el envío de log) para mandar el syslog; la lectura de `/ppp/active` funciona sin eso,
+con el mismo usuario de solo lectura.
+
 ## Pantalla / TV
 
 Abrí el panel en el navegador de la pantalla. El sonido se activa con el botón
@@ -106,13 +137,14 @@ MKMON_DEMO=1 MKMON_ADMIN_PASSWORD=demo venv/bin/python -m app
 ```
 
 Abrí http://localhost:8080 (usuario `admin`). Simula dos routers con tráfico, un pico
-de consumo y una caída de enlace que se repiten cada 6 minutos.
+de consumo, una caída de enlace y caídas de clientes PPPoE (individuales y una masiva)
+que se repiten cada 6 minutos.
 
 ## Configuración
 
 Variables en `/etc/mk-monitor/mk-monitor.env` (ver `mk-monitor.env.example`):
 `MKMON_PORT`, `MKMON_ADMIN_USER`, `MKMON_ADMIN_PASSWORD`, `MKMON_REGISTER_TOKEN`,
-`MKMON_PUBLIC_VIEW`, `MKMON_TELEGRAM_*`. Los datos viven en `/var/lib/mk-monitor/`
+`MKMON_PUBLIC_VIEW`, `MKMON_SYSLOG_PORT`, `MKMON_TELEGRAM_*`. Los datos viven en `/var/lib/mk-monitor/`
 (SQLite) y se guarda 7 días de historial de tráfico (configurable).
 
 ## Seguridad
@@ -134,13 +166,13 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Cubren el motor de alertas, la API y la lectura contra un servidor falso del
-protocolo API de RouterOS (login, filtro de interfaces, caída y recuperación de enlace).
+Cubren el motor de alertas, la API, el monitor PPPoE (gracia, caída masiva, vencimiento,
+reinicio del servidor), el receptor syslog por UDP real y la lectura contra un servidor
+falso del protocolo API de RouterOS (login, interfaces, `/ppp/active`, caída y recuperación).
 
 ## Próximos pasos
 
-- **Clientes PPPoE:** alerta de desconexión leyendo `/ppp/active` y el log del
-  MikroTik (syslog), y consumo anormal por cliente.
+- **Consumo anormal por cliente PPPoE** (queues o contadores por sesión).
 - Alertas por caída anormal de tráfico (enlace arriba pero sin tráfico).
 - Más de un usuario / usuarios de solo lectura.
 

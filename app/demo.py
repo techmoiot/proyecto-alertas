@@ -17,7 +17,22 @@ DEMO_SETTINGS = {
     "threshold_clear_s": 6,
     "default_max_rx_mbps": 900,
     "sample_every_s": 5,
+    "pppoe_poll_s": 4,
+    "pppoe_grace_s": 20,
+    "pppoe_mass_threshold": 15,
+    "pppoe_mass_window_s": 30,
 }
+
+# Cantidad de clientes PPPoE simulados por router.
+PPPOE_CLIENTS = {"Demo-Core": 60}
+
+# Escenario PPPoE (se repite cada 6 minutos): (clientes, desde s, hasta s, motivo)
+PPPOE_SCENARIO = [
+    ([7], 30, 45, "session closed"),                  # se reconecta rápido: no genera alerta
+    ([12], 60, 200, "peer is not responding"),        # caída individual con alerta
+    ([20], 120, 170, "session closed"),
+    (list(range(21, 51)), 250, 300, "peer is not responding"),   # caída masiva (30 clientes)
+]
 
 # nombre -> interfaces: (nombre, tipo, comentario, rx base Mbps, tx base Mbps)
 PROFILES = {
@@ -57,12 +72,53 @@ class DemoClient:
         self.last = self.t0
         self.rng = random.Random(router["id"])
         self.counters = {p[0]: [0, 0] for p in self.profile}
+        self.n_clients = PPPOE_CLIENTS.get(router["name"], 0)
+        self._offline: dict[int, str] = {}
+        self._log: list[tuple[str, str, str]] = []
 
     def connect(self) -> None:
         pass
 
     def close(self) -> None:
         pass
+
+    @staticmethod
+    def _client_name(i: int) -> str:
+        return f"cliente{i:03d}"
+
+    def fetch_pppoe_active(self) -> list[dict]:
+        now = time.time()
+        phase = (now - self.t0) % 360
+        offline: dict[int, str] = {}
+        for clients, start, end, reason in PPPOE_SCENARIO:
+            if start <= phase < end:
+                for c in clients:
+                    if c <= self.n_clients:
+                        offline[c] = reason
+        # Genera las líneas de "log" de los cambios, como lo haría el MikroTik.
+        for c, reason in offline.items():
+            if c not in self._offline:
+                self._log.append((self._client_name(c), "disconnect", reason))
+        for c in self._offline:
+            if c not in offline:
+                self._log.append((self._client_name(c), "connect", ""))
+        self._offline = offline
+        up_s = int(now - self.t0)
+        return [
+            {
+                "name": self._client_name(i),
+                "service": "pppoe",
+                "address": f"10.20.{i // 250}.{i % 250 + 1}",
+                "caller-id": f"AA:BB:CC:00:{i // 256:02X}:{i % 256:02X}",
+                "uptime": f"{(up_s // 3600) + i}h{(up_s % 3600) // 60}m",
+            }
+            for i in range(1, self.n_clients + 1)
+            if i not in offline
+        ]
+
+    def drain_log(self) -> list[tuple[str, str, str]]:
+        out, self._log = self._log, []
+        return out
 
     def fetch_interfaces(self) -> list[dict]:
         now = time.time()
