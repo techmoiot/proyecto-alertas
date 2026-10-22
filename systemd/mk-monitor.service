@@ -1,0 +1,18 @@
+[Unit]
+Description=MK Monitor - alertas de interfaces MikroTik
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mkmonitor
+Group=mkmonitor
+WorkingDirectory=/opt/mk-monitor
+EnvironmentFile=/etc/mk-monitor/mk-monitor.env
+ExecStart=/opt/mk-monitor/venv/bin/python -m app
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MK Monitor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="logo"></span>MK Monitor<span id="demoBadge" class="badge demo" hidden>DEMO</span></div>
+    <nav id="tabs">
+      <button data-tab="panel" class="active">Panel</button>
+      <button data-tab="history">Historial</button>
+      <button data-tab="config">Configuración</button>
+    </nav>
+    <div class="status">
+      <span id="chipRouters" class="chip">…</span>
+      <span id="chipAlerts" class="chip">…</span>
+      <button id="soundBtn" class="ghost" title="Activar sonido de alertas">🔇 Sonido</button>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <div id="offline" class="offline" hidden>Sin conexión con el servidor. Reintentando…</div>
+
+  <main>
+    <section id="tab-panel">
+      <div id="alertsBox"></div>
+      <div id="routers"></div>
+    </section>
+
+    <section id="tab-history" hidden>
+      <div class="toolbar">
+        <h2>Historial de alertas</h2>
+        <label>Mostrar
+          <select id="histFilter">
+            <option value="all">todas</option>
+            <option value="active">solo activas</option>
+          </select>
+        </label>
+      </div>
+      <div id="histBox"></div>
+    </section>
+
+    <section id="tab-config" hidden>
+      <div id="configBox"></div>
+    </section>
+  </main>
+
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card">
+      <button id="modalClose" class="ghost close" aria-label="Cerrar">✕</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
