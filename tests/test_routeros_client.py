@@ -256,3 +256,16 @@ def test_pppoe_permission_error_does_not_mark_router_down():
     finally:
         poller.stop()
         server.stop()
+
+
+def test_fetch_vlans_reads_vlan_interfaces_and_addresses(server):
+    server.vlans = [{"name": "vlan101", "vlan-id": 101, "interface": "sfp1", "disabled": False}]
+    server.addresses = [{"address": "10.10.1.1/24", "interface": "vlan101", "disabled": False}]
+    c = RouterClient(router_for(server))
+    c.connect()
+    vlans, addrs = c.fetch_vlans()
+    c.close()
+    assert vlans[0]["name"] == "vlan101" and vlans[0]["vlan-id"] == 101
+    assert addrs[0]["address"] == "10.10.1.1/24" and addrs[0]["interface"] == "vlan101"
+    from app.topology import detect_pons
+    assert detect_pons(vlans, addrs)["pons"][0]["inet_cidr"] == "10.10.1.0/25"

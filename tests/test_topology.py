@@ -220,3 +220,40 @@ def test_message_keeps_last_down_text_while_recovering(topo, mon, router, db):
     topo.evaluate(T0 + 76)                       # ya volvieron todos, pero la alerta sigue abierta unos segundos
     msg = active_pon_alerts(db)[0]["message"]
     assert "10 de 10" in msg and "— 0 de" not in msg
+
+
+# --------------------------------------------------------- detección en el MikroTik
+
+
+def test_detect_pons_from_vlans_and_addresses():
+    from app.topology import detect_pons
+
+    vlans = [
+        {"name": "vlan102", "vlan-id": 102, "disabled": False},
+        {"name": "vlan101", "vlan-id": 101, "disabled": False},
+        {"name": "vlan-sin-ip", "vlan-id": 150, "disabled": False},
+        {"name": "vlan-off", "vlan-id": 160, "disabled": True},
+        {"name": "vlan10", "vlan-id": 10, "disabled": False},
+        {"name": "vlan-chica", "vlan-id": 170, "disabled": False},
+    ]
+    addrs = [
+        {"address": "10.10.2.1/24", "interface": "vlan102"},
+        {"address": "10.10.1.1/24", "interface": "vlan101"},
+        {"address": "192.168.10.1/24", "interface": "vlan10"},
+        {"address": "10.99.0.1/30", "interface": "vlan-off"},
+        {"address": "172.16.0.1/32", "interface": "vlan-chica"},
+        {"address": "fe80::1/64", "interface": "vlan-sin-ip"},
+    ]
+    out = detect_pons(vlans, addrs, 100, 200)
+    assert [(p["name"], p["vlan"], p["inet_cidr"], p["tv_cidr"]) for p in out["pons"]] == [
+        ("PON 1", 101, "10.10.1.0/25", "10.10.1.128/25"),
+        ("PON 2", 102, "10.10.2.0/25", "10.10.2.128/25"),
+    ]
+    assert out["pons"][0]["from"] == "vlan101 · 10.10.1.1/24"
+    assert any("vlan-sin-ip" in x and "IPv4" in x for x in out["skipped"])
+    assert any("vlan-chica" in x for x in out["skipped"])
+    allv = detect_pons(vlans, addrs)["pons"]                       # sin filtro entra también la VLAN de gestión
+    assert [p["vlan"] for p in allv] == [10, 101, 102]
+    small = detect_pons([{"name": "v", "vlan-id": 5}], [{"address": "10.0.0.1/26", "interface": "v"}])["pons"][0]
+    assert small["inet_cidr"] == "10.0.0.0/26" and small["tv_cidr"] == ""
+    validate_pons(out["pons"])                                      # lo detectado es una configuración válida

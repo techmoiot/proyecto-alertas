@@ -140,6 +140,15 @@ class DemoClient:
             if i not in offline
         ]
 
+    def fetch_vlans(self):
+        vlans = [{"name": f"vlan{101 + n}", "vlan-id": 101 + n, "interface": "sfp-sfpplus2", "disabled": False}
+                 for n in range(DEMO_PONS)]
+        addrs = [{"address": f"10.{101 + n}.0.1/24", "interface": f"vlan{101 + n}", "disabled": False}
+                 for n in range(DEMO_PONS)]
+        vlans.append({"name": "vlan-gestion", "vlan-id": 10, "interface": "ether5", "disabled": False})
+        addrs.append({"address": "192.168.10.1/24", "interface": "vlan-gestion", "disabled": False})
+        return vlans, addrs
+
     def drain_log(self) -> list[tuple[str, str, str]]:
         out, self._log = self._log, []
         return out

@@ -705,6 +705,8 @@ document.addEventListener("fullscreenchange", () => setTimeout(() => { netResize
 /* ====================================================== configuración de OLT */
 
 let OLT_EDIT = null;   // { id, name, pons: [{name, vlan, inet_cidr, tv_cidr}] }
+let OLT_ROUTERS = [];  // routers para «Detectar desde el MikroTik»
+let OLT_INFO = "";     // resultado de la última detección
 
 function ipToInt(s) {
   const p = s.split(".").map(Number);
@@ -740,7 +742,8 @@ async function renderOltConfig() {
   const box = $("#oltBox");
   if (!box) return;
   try {
-    const olts = await api("/api/olts");
+    const [olts, routers] = await Promise.all([api("/api/olts"), api("/api/routers")]);
+    OLT_ROUTERS = routers;
     const list = olts.length
       ? `<table><thead><tr><th>OLT</th><th>PON</th><th>VLAN</th><th></th></tr></thead><tbody>${olts
           .map((o) => {
@@ -766,7 +769,7 @@ function oltRenderForm() {
   if (!f || !OLT_EDIT) { if (f) f.innerHTML = ""; return; }
   const rows = OLT_EDIT.pons
     .map(
-      (p, i) => `<tr><td><input data-pon="${i}" data-k="name" value="${esc(p.name)}" maxlength="40"></td>
+      (p, i) => `<tr><td><input data-pon="${i}" data-k="name" value="${esc(p.name)}" maxlength="40">${p.from ? `<small class="muted" style="display:block">${esc(p.from)}</small>` : ""}</td>
       <td><input data-pon="${i}" data-k="vlan" type="number" min="0" max="4094" value="${p.vlan || ""}"></td>
       <td><input data-pon="${i}" data-k="inet_cidr" value="${esc(p.inet_cidr)}" placeholder="10.10.1.0/25"></td>
       <td><input data-pon="${i}" data-k="tv_cidr" value="${esc(p.tv_cidr)}" placeholder="10.10.1.128/25"></td>
@@ -781,7 +784,18 @@ function oltRenderForm() {
       <div class="field"><label>Red de cada VLAN</label><input id="olt_tpl" value="10.10.{n}.0/24">
         <small>{n} = número de PON · {v} = VLAN. Se parte en dos /25: Internet (primera mitad) y TV (segunda).</small></div>
     </div>
-    <div class="row" style="margin:.6rem 0"><button class="ghost" id="oltGen">Generar los PON</button>
+    ${OLT_ROUTERS.length ? `<div class="card" style="background:var(--panel-2);margin:.8rem 0">
+      <b>Detectar desde el MikroTik</b>
+      <p class="muted" style="margin:.2rem 0 .6rem">Lee las interfaces VLAN del router y sus IP, y arma la tabla de abajo. Revisala antes de guardar: no se guarda nada hasta que lo pidas.</p>
+      <div class="form-grid">
+        <div class="field"><label>Router</label><select id="olt_router">${OLT_ROUTERS
+          .map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Solo VLAN desde</label><input id="olt_vfrom" type="number" min="1" max="4094" placeholder="(todas)"></div>
+        <div class="field"><label>hasta</label><input id="olt_vto" type="number" min="1" max="4094" placeholder="(todas)"></div>
+      </div>
+      <div class="row" style="margin-top:.6rem"><button id="oltDetect">Detectar VLAN y redes</button></div>
+      <div id="oltDetectInfo" class="muted" style="margin-top:.5rem">${esc(OLT_INFO)}</div></div>` : ""}
+    <div class="row" style="margin:.6rem 0"><button class="ghost" id="oltGen">Generar los PON a mano</button>
       <button class="ghost" id="oltAddRow">Agregar un PON</button>
       <span class="muted">Después podés corregir cualquier fila a mano.</span></div>
     <div class="tablewrap"><table><thead><tr><th>PON</th><th>VLAN</th><th>Pool Internet</th><th>Pool TV</th><th></th></tr></thead>
@@ -805,11 +819,13 @@ document.addEventListener("click", async (ev) => {
   if (!t) return;
   try {
     if (t.id === "oltNew") {
+      OLT_INFO = "";
       OLT_EDIT = { id: null, name: "", pons: [] };
       oltRenderForm();
     } else if (t.dataset.oltedit) {
       const olts = JSON.parse($("#oltBox").dataset.olts || "[]");
       const o = olts.find((x) => x.id === parseInt(t.dataset.oltedit, 10));
+      OLT_INFO = "";
       OLT_EDIT = { id: o.id, name: o.name, pons: o.pons.map((p) => ({ name: p.name, vlan: p.vlan, inet_cidr: p.inet_cidr, tv_cidr: p.tv_cidr })) };
       oltRenderForm();
       $("#oltForm").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -819,6 +835,25 @@ document.addEventListener("click", async (ev) => {
       OLT_EDIT = null;
       toast("OLT eliminada");
       renderOltConfig();
+    } else if (t.id === "oltDetect") {
+      OLT_EDIT.name = $("#olt_name").value;
+      const body = {};
+      const f = parseInt($("#olt_vfrom").value, 10), to = parseInt($("#olt_vto").value, 10);
+      if (f) body.vlan_from = f;
+      if (to) body.vlan_to = to;
+      t.disabled = true;
+      $("#oltDetectInfo").textContent = "Leyendo el router…";
+      try {
+        const res = await api(`/api/routers/${$("#olt_router").value}/detect-vlans`, { method: "POST", body });
+        OLT_EDIT.pons = res.pons;
+        OLT_INFO = res.pons.length
+          ? `Se encontraron ${res.pons.length} VLAN con IP (de ${res.vlans_total} VLAN). Cada red se partió en dos mitades: Internet y TV. Quitá las que no son PON (gestión, etc.).`
+          : `No se encontró ninguna VLAN con IP${res.vlans_total ? ` (el router tiene ${res.vlans_total} VLAN)` : ""}.`;
+        if (res.skipped.length) OLT_INFO += " Salteadas: " + res.skipped.join("; ") + ".";
+      } finally {
+        t.disabled = false;
+      }
+      oltRenderForm();
     } else if (t.id === "oltGen") {
       const count = parseInt($("#olt_count").value, 10) || 0;
       if (count < 1 || count > 128) throw new Error("La cantidad de PON va de 1 a 128");

@@ -36,6 +36,10 @@ class FakeClient:
     def fetch_interfaces(self):
         return [{"name": "ether1", "type": "ether", "running": True, "disabled": False, "comment": "WAN"}]
 
+    def fetch_vlans(self):
+        return ([{"name": "vlan101", "vlan-id": 101}, {"name": "vlan102", "vlan-id": 102}],
+                [{"address": "10.10.1.1/24", "interface": "vlan101"}, {"address": "10.10.2.1/24", "interface": "vlan102"}])
+
     def close(self):
         pass
 
@@ -501,3 +505,16 @@ def test_sector_settings_exist_and_validate(client):
     s = client.get("/api/settings").json()["settings"]
     assert s["pon_down_pct"] == 50 and s["pon_min_clients"] == 4 and s["pon_down_after_s"] == 30
     assert client.put("/api/settings", json={"pon_down_pct": 70}).status_code == 200
+
+
+def test_detect_vlans_endpoint_proposes_pons_without_saving(client):
+    rid = add_router(client)
+    r = client.post(f"/api/routers/{rid}/detect-vlans", json={})
+    assert r.status_code == 200, r.text
+    assert [p["vlan"] for p in r.json()["pons"]] == [101, 102] and r.json()["vlans_total"] == 2
+    assert client.get("/api/olts").json() == []                         # solo propone
+    assert [p["vlan"] for p in client.post(f"/api/routers/{rid}/detect-vlans", json={"vlan_from": 102}).json()["pons"]] == [102]
+    assert client.post("/api/routers/999/detect-vlans", json={}).status_code == 404
+    assert client.post(f"/api/routers/{rid}/detect-vlans", json={"vlan_from": 5000}).status_code == 422
+    FakeClient.fail = True
+    assert client.post(f"/api/routers/{rid}/detect-vlans", json={}).status_code == 502

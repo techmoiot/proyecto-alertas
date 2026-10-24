@@ -23,7 +23,7 @@ from .notify import Notifier
 from .poller import Poller, RouterClient
 from .pppoe import PPPoEMonitor, explain_reason
 from .syslog import SyslogReceiver
-from .topology import ConfigError, Topology
+from .topology import ConfigError, Topology, detect_pons
 
 log = logging.getLogger("mkmonitor")
 
@@ -73,6 +73,11 @@ class PonIn(BaseModel):
 class OltIn(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     pons: list[PonIn] = Field(min_length=1, max_length=128)
+
+
+class DetectIn(BaseModel):
+    vlan_from: int | None = Field(None, ge=1, le=4094)
+    vlan_to: int | None = Field(None, ge=1, le=4094)
 
 
 class IfaceConfigIn(BaseModel):
@@ -490,6 +495,27 @@ def create_app(
             return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons])}
         except ConfigError as exc:
             raise HTTPException(400, str(exc)) from None
+
+    @app.post("/api/routers/{rid}/detect-vlans", dependencies=[Depends(admin)])
+    def detect_vlans(rid: int, body: DetectIn):
+        """Lee las VLAN y sus IP del MikroTik y propone los PON (no guarda nada)."""
+        router = db.one("SELECT * FROM routers WHERE id=?", (rid,))
+        if not router:
+            raise HTTPException(404, "Router no encontrado")
+        client = client_factory(dict(router))
+        try:
+            client.connect()
+            vlans, addrs = client.fetch_vlans()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"No se pudo leer el router: {type(exc).__name__}: {exc}") from None
+        finally:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        found = detect_pons(vlans, addrs, body.vlan_from, body.vlan_to)
+        found["vlans_total"] = len(vlans)
+        return found
 
     @app.put("/api/olts/{oid}", dependencies=[Depends(admin)])
     def olts_update(oid: int, body: OltIn):

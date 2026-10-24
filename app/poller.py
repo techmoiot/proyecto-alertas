@@ -69,6 +69,14 @@ class RouterClient:
         wanted_types, wanted_names = set(types), set(include)
         return [r for r in rows if r.get("type") in wanted_types or r.get("name") in wanted_names]
 
+    def fetch_vlans(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Interfaces VLAN y direcciones IP del router (para detectar los PON)."""
+        vlans = list(self.api.path("interface", "vlan").select(
+            Key("name"), Key("vlan-id"), Key("interface"), Key("disabled")))
+        addrs = list(self.api.path("ip", "address").select(
+            Key("address"), Key("interface"), Key("disabled")))
+        return vlans, addrs
+
     def fetch_pppoe_active(self) -> list[dict[str, Any]]:
         """Sesiones PPPoE activas (/ppp/active).
 

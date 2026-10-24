@@ -70,6 +70,57 @@ def validate_pons(pons: list[dict]) -> list[dict]:
     return out
 
 
+def detect_pons(vlans: list[dict], addresses: list[dict],
+                vlan_from: int | None = None, vlan_to: int | None = None) -> dict:
+    """Arma la lista de PON a partir de las VLAN y direcciones IP que tiene un MikroTik.
+
+    Cada interfaz VLAN con una IPv4 pasa a ser un PON; su red se parte en dos mitades
+    (Internet y TV) si es /24 o más grande. Es una propuesta: se revisa antes de guardar.
+    """
+    by_if: dict[str, ipaddress.IPv4Interface] = {}
+    for a in addresses:
+        if a.get("disabled") or not a.get("interface"):
+            continue
+        try:
+            ifc = ipaddress.ip_interface(str(a.get("address", "")).strip())
+        except ValueError:
+            continue
+        if ifc.version == 4 and a["interface"] not in by_if:
+            by_if[a["interface"]] = ifc
+    pons, skipped = [], []
+    usable = []
+    for v in vlans:
+        try:
+            vid = int(v.get("vlan-id"))
+        except (TypeError, ValueError):
+            continue
+        if v.get("disabled"):
+            continue
+        if vlan_from is not None and vid < vlan_from:
+            continue
+        if vlan_to is not None and vid > vlan_to:
+            continue
+        usable.append((vid, v))
+    for vid, v in sorted(usable, key=lambda t: t[0]):
+        name = v.get("name", f"vlan{vid}")
+        ifc = by_if.get(name)
+        if ifc is None:
+            skipped.append(f"{name} (VLAN {vid}): no tiene dirección IPv4")
+            continue
+        net = ifc.network
+        if net.prefixlen < 16 or net.prefixlen > 29:
+            skipped.append(f"{name} (VLAN {vid}): la red {net} no es de un tamaño razonable")
+            continue
+        if net.prefixlen <= 24:
+            first, second = list(net.subnets(prefixlen_diff=1))
+            inet, tv = str(first), str(second)
+        else:
+            inet, tv = str(net), ""
+        pons.append({"name": f"PON {len(pons) + 1}", "vlan": vid, "inet_cidr": inet, "tv_cidr": tv,
+                     "from": f"{name} · {ifc.with_prefixlen}"})
+    return {"pons": pons, "skipped": skipped}
+
+
 class Topology:
     def __init__(self, db, engine, pppoe, clock=time.time):
         self.db = db

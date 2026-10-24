@@ -123,6 +123,12 @@ sobre todo su grupo y se genera una alerta crítica «Sector caído».
   puertos que tenga tu OLT), la VLAN del primero y la red de cada VLAN, por ejemplo
   `10.10.{n}.0/24` (`{n}` = número de PON, `{v}` = VLAN). Cada red se parte en dos /25:
   la primera mitad es Internet y la segunda TV. Después podés corregir cada fila a mano.
+- **Detectar desde el MikroTik:** en el mismo formulario, «Detectar VLAN y redes» lee del
+  router elegido las interfaces VLAN y sus IP (`/interface/vlan` y `/ip/address`, con el
+  usuario de solo lectura) y arma la tabla: un PON por VLAN, con su red partida en dos
+  mitades (Internet / TV). Se puede limitar por rango de VLAN. Es una propuesta: revisala,
+  quitá las VLAN que no son PON (gestión, etc.) y recién ahí guardás. Si una VLAN tiene una
+  red más chica que /24, entra entera como Internet.
 - **Cómo ubica a los clientes:** por la **IP** que les da el PPPoE (`/ppp/active`). No hay
   que cargar nada por cliente; si la IP cae en el pool de un PON, el cliente va ahí.
   Los que no caen en ningún pool se cuentan aparte («fuera de las VLAN»).

@@ -115,6 +115,8 @@ class FakeRouterOS:
         self.reject_queries = reject_queries
         self.requests: list[list[str]] = []
         self.ppp_active: list[dict] = []     # sesiones de /ppp/active (se editan desde la prueba)
+        self.vlans: list[dict] = []          # /interface/vlan
+        self.addresses: list[dict] = []      # /ip/address
         self.ppp_error: str | None = None    # si se pone, /ppp/active/print contesta con un error
         self._sock = socket.socket()
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -165,6 +167,8 @@ class FakeRouterOS:
                     write_sentence(conn, ["!done"])
                 elif cmd == "/interface/print":
                     self._interface_print(conn, args)
+                elif cmd in ("/interface/vlan/print", "/ip/address/print"):
+                    self._plain_print(conn, args, self.vlans if "vlan" in cmd else self.addresses)
                 elif cmd == "/ppp/active/print":
                     self._ppp_active_print(conn, args)
                 else:
@@ -212,6 +216,19 @@ class FakeRouterOS:
         with self._lock:
             rows = [dict(r) for r in self.ppp_active]
         for n, item in enumerate(rows, start=1):
+            item[".id"] = f"*{n:X}"
+            keys = [".id"] + (proplist if proplist else [k for k in item if k != ".id"])
+            write_sentence(conn, ["!re"] + [f"={k}={wire(item[k])}" for k in keys if k in item])
+        write_sentence(conn, ["!done"])
+
+    def _plain_print(self, conn: socket.socket, args: list[str], rows: list[dict]) -> None:
+        proplist = None
+        for a in args:
+            if a.startswith("=.proplist="):
+                proplist = a.split("=", 2)[2].split(",")
+        with self._lock:
+            snapshot = [dict(r) for r in rows]
+        for n, item in enumerate(snapshot, start=1):
             item[".id"] = f"*{n:X}"
             keys = [".id"] + (proplist if proplist else [k for k in item if k != ".id"])
             write_sentence(conn, ["!re"] + [f"={k}={wire(item[k])}" for k in keys if k in item])
