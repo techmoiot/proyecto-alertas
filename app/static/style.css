@@ -155,3 +155,22 @@ td input[type=text], td input[type=number] { width: 100%; min-width: 80px; }
 .alert.more { border-left-color: var(--warn); background: #231c0f; }
 td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; }
 td.wrap { white-space: normal; min-width: 14rem; }
+
+/* Mapa de red */
+.netwrap { position: relative; height: calc(100vh - 250px); min-height: 440px; background: radial-gradient(ellipse at center, #121a24 0%, #0b0f15 100%); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.netwrap:fullscreen { height: 100vh; border-radius: 0; border: 0; }
+#netCanvas { display: block; cursor: grab; }
+.nettip { position: absolute; z-index: 5; pointer-events: none; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: .4rem .6rem; font-size: .85rem; box-shadow: 0 6px 24px rgba(0,0,0,.5); max-width: 260px; }
+.netpanel { position: absolute; top: .6rem; right: .6rem; bottom: .6rem; width: min(330px, calc(100% - 1.2rem)); overflow: auto; background: rgba(22,28,37,.96); border: 1px solid var(--line); border-radius: 12px; padding: .8rem .9rem; z-index: 6; }
+.netpanel .close { position: absolute; top: .4rem; right: .4rem; }
+.netpanel h3 { padding-right: 2rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.netpool { margin: .5rem 0; font-size: .88rem; }
+.netpool .bar { margin: .25rem 0; }
+.netpanel table { font-size: .82rem; }
+.netlegend { position: absolute; left: .6rem; bottom: .5rem; display: flex; gap: .8rem; flex-wrap: wrap; font-size: .75rem; color: var(--muted); pointer-events: none; }
+.netlegend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .3rem; vertical-align: baseline; }
+.netlegend i.ring { background: transparent; border: 2px solid; width: 10px; height: 10px; box-sizing: border-box; }
+.st.exp { color: #ff8a82; border-color: #7d2520; }
+@media (max-width: 700px) { .netwrap { height: calc(100vh - 300px); } .netpanel { top: auto; height: 55%; width: calc(100% - 1.2rem); } }
+.netbanner { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .6rem; }
+.netsector { background: #2a1514; color: #ff9c95; border: 1px solid #7d2520; font-weight: 600; font-size: .85rem; padding: .3rem .7rem; border-radius: 999px; animation: blink 1.4s ease-in-out infinite; }

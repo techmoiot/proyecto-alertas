@@ -444,3 +444,60 @@ def test_old_database_is_migrated_without_losing_routers(tmp_path):
     assert r["name"] == "Viejo" and r["pppoe_enabled"] == 1 and r["syslog_ip"] == ""
     assert db.query("SELECT COUNT(*) AS n FROM pppoe_sessions")[0]["n"] == 0
     DB(path)  # reabrir no falla (migración idempotente)
+
+
+# ------------------------------------------------------------------ OLT / red
+
+
+def olt_body(name="OLT-1", n=2):
+    return {"name": name, "pons": [{"name": f"PON {i}", "vlan": 100 + i, "inet_cidr": f"10.{i}.0.0/25",
+                                    "tv_cidr": f"10.{i}.0.128/25"} for i in range(1, n + 1)]}
+
+
+def test_olt_endpoints_require_login_and_admin(app):
+    with TestClient(app) as c:
+        for method, path in (("get", "/api/network"), ("get", "/api/olts"), ("post", "/api/olts")):
+            assert getattr(c, method)(path).status_code == 401, path
+
+
+def test_olt_crud_validation_and_network_snapshot(client, app):
+    r = client.post("/api/olts", json=olt_body())
+    assert r.status_code == 200, r.text
+    oid = r.json()["id"]
+    assert client.post("/api/olts", json=olt_body()).status_code == 400            # nombre repetido
+    bad = olt_body("OLT-2")
+    bad["pons"][0]["inet_cidr"] = "10.1.0/25"
+    assert "red válida" in client.post("/api/olts", json=bad).json()["detail"]
+    assert client.post("/api/olts", json={"name": "x", "pons": []}).status_code == 422
+    assert len(client.get("/api/olts").json()[0]["pons"]) == 2
+
+    rid = add_router(client)
+    router = {"id": rid, "name": "Core", "host": "10.0.0.1"}
+    t = time.time()
+    rows = [{"name": f"c{i}", "service": "pppoe", "address": f"10.1.0.{i}", "caller-id": "", "uptime": "1h"}
+            for i in range(1, 11)]
+    app.state.pppoe.process_active(router, rows, t)
+    app.state.pppoe.process_active(router, [], t + 15)
+    app.state.topology.evaluate(t + 16)
+    app.state.topology.evaluate(t + 100)
+    net = client.get("/api/network").json()
+    pon1 = net["olts"][0]["pons"][0]
+    assert pon1["total"] == 10 and pon1["down"] == 10 and pon1["status"] == "down" and pon1["alert"]
+    assert pon1["pools"][0]["clients"][0][1] in ("grace", "alert", "mass")
+    alerts = client.get("/api/state").json()["alerts"]
+    sector = [a for a in alerts if a["kind"] == "pon_down"]
+    assert sector and sector[0]["router"] == "OLT" and "Sector caído" in sector[0]["message"]
+
+    upd = olt_body("OLT-1", 3)
+    assert client.put(f"/api/olts/{oid}", json=upd).status_code == 200
+    assert len(client.get("/api/olts").json()[0]["pons"]) == 3
+    assert client.put("/api/olts/999", json=olt_body("zz")).status_code in (400, 404)
+    assert client.delete(f"/api/olts/{oid}").status_code == 200
+    assert client.delete(f"/api/olts/{oid}").status_code == 404
+    assert client.get("/api/network").json()["olts"] == []
+
+
+def test_sector_settings_exist_and_validate(client):
+    s = client.get("/api/settings").json()["settings"]
+    assert s["pon_down_pct"] == 50 and s["pon_min_clients"] == 4 and s["pon_down_after_s"] == 30
+    assert client.put("/api/settings", json={"pon_down_pct": 70}).status_code == 200

@@ -129,7 +129,7 @@ class Engine:
             self.active[(row["router_id"], row["iface"], row["kind"])] = {
                 "id": row["id"],
                 "message": row["message"],
-                "router": row["router"] or f"#{row['router_id']}",
+                "router": row["router"] or ("OLT" if row["router_id"] == 0 else f"#{row['router_id']}"),
             }
 
     def _notify(self, text: str) -> None:

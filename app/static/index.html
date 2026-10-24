@@ -12,6 +12,7 @@
     <nav id="tabs">
       <button data-tab="panel" class="active">Panel</button>
       <button data-tab="pppoe">PPPoE</button>
+      <button data-tab="network">Red</button>
       <button data-tab="history">Historial</button>
       <button data-tab="config">Configuración</button>
     </nav>
@@ -62,6 +63,41 @@
       </details>
     </section>
 
+    <section id="tab-network" hidden>
+      <div id="netEmpty" class="card" hidden>
+        <h2>Mapa de la red</h2>
+        <p>Acá vas a ver tu OLT como un punto central, un nodo por cada PON (una VLAN por PON), sus dos pools
+          —Internet y TV— y cada cliente como un punto conectado, para ver de un vistazo si un sector se cayó.</p>
+        <p>Primero cargá la OLT y sus PON en <b>Configuración → OLT y PON</b> (se generan los 16 en un paso).</p>
+        <button data-tabgo="config">Ir a Configuración</button>
+      </div>
+      <div id="netMain">
+        <div class="toolbar">
+          <h2>Mapa de la red</h2>
+          <div class="row">
+            <select id="netOlt" hidden></select>
+            <button class="ghost small" id="netFit">Centrar</button>
+            <button class="ghost small" id="netFull">Pantalla completa</button>
+          </div>
+        </div>
+        <div id="netSummary" class="row" style="margin-bottom:.6rem"></div>
+        <div id="netBanner"></div>
+        <div id="netWrap" class="netwrap">
+          <canvas id="netCanvas"></canvas>
+          <div id="netTip" class="nettip" hidden></div>
+          <div id="netPanel" class="netpanel" hidden></div>
+          <div class="netlegend">
+            <span><i style="background:#34c77b"></i>conectado</span>
+            <span><i style="background:#f5a524"></i>en espera</span>
+            <span><i style="background:#f0443a"></i>caído</span>
+            <span><i class="ring" style="border-color:#4aa3ff"></i>pool Internet</span>
+            <span><i class="ring" style="border-color:#b583ff"></i>pool TV</span>
+          </div>
+        </div>
+        <p class="muted" style="margin-top:.5rem">Tocá un PON para ver su detalle · doble toque para acercar · rueda o pellizco para zoom · arrastrá para mover.</p>
+      </div>
+    </section>
+
     <section id="tab-history" hidden>
       <div class="toolbar">
         <h2>Historial de alertas</h2>
@@ -89,5 +125,6 @@
 
   <div id="toast" class="toast" hidden></div>
   <script src="/app.js"></script>
+  <script src="/network.js"></script>
 </body>
 </html>

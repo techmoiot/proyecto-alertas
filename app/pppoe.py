@@ -365,15 +365,25 @@ class PPPoEMonitor:
         with self._lock:
             return {rid: dict(st) for rid, st in self.stats.items()}
 
-    def _view(self, rid: int, se: Session, now: float) -> dict:
+    @staticmethod
+    def _status(se: Session) -> str:
         if se.state == "up":
-            status = "up"
-        elif se.alerted == ALERT_SUPPRESSED:
-            status = "mass"          # parte de una caída masiva
-        elif se.alerted == ALERT_NONE:
-            status = "grace"         # en período de gracia, todavía sin alerta
-        else:
-            status = "alert"
+            return "up"
+        if se.alerted == ALERT_EXPIRED:
+            return "exp"             # no volvió en mucho tiempo (probable baja)
+        if se.alerted == ALERT_SUPPRESSED:
+            return "mass"            # parte de una caída masiva
+        if se.alerted == ALERT_NONE:
+            return "grace"           # en período de gracia, todavía sin alerta
+        return "alert"
+
+    def all_sessions(self) -> list[tuple[int, Session, str]]:
+        """Todas las sesiones conocidas con su estado, para armar el mapa de la red."""
+        with self._lock:
+            return [(rid, se, self._status(se)) for rid, sess in self.sessions.items() for se in sess.values()]
+
+    def _view(self, rid: int, se: Session, now: float) -> dict:
+        status = self._status(se)
         return {
             "router_id": rid, "name": se.name, "state": se.state, "status": status,
             "address": se.address, "caller_id": se.caller_id, "since": se.since,

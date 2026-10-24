@@ -23,6 +23,7 @@ from .notify import Notifier
 from .poller import Poller, RouterClient
 from .pppoe import PPPoEMonitor, explain_reason
 from .syslog import SyslogReceiver
+from .topology import ConfigError, Topology
 
 log = logging.getLogger("mkmonitor")
 
@@ -62,6 +63,18 @@ class RegisterIn(BaseModel):
     use_ssl: bool = False
 
 
+class PonIn(BaseModel):
+    name: str = Field("", max_length=40)
+    vlan: int = Field(0, ge=0, le=4094)
+    inet_cidr: str = Field("", max_length=64)
+    tv_cidr: str = Field("", max_length=64)
+
+
+class OltIn(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    pons: list[PonIn] = Field(min_length=1, max_length=128)
+
+
 class IfaceConfigIn(BaseModel):
     label: str | None = Field(None, max_length=60)
     monitor: bool | None = None
@@ -96,9 +109,10 @@ def create_app(
     engine = Engine(db, notifier)
     pppoe = PPPoEMonitor(db, engine)
     syslog = SyslogReceiver(cfg.syslog_port, pppoe.on_syslog)
+    topology = Topology(db, engine, pppoe)
     if client_factory is None:
         client_factory = DemoClient if cfg.demo else RouterClient
-    poller = Poller(db, engine, client_factory, pppoe)
+    poller = Poller(db, engine, client_factory, pppoe, topology)
     if cfg.demo:
         apply_demo(db)
 
@@ -116,7 +130,7 @@ def create_app(
 
     app = FastAPI(title="MK Monitor", version=__version__, lifespan=lifespan)
     app.state.db, app.state.engine, app.state.poller = db, engine, poller
-    app.state.pppoe, app.state.syslog = pppoe, syslog
+    app.state.pppoe, app.state.syslog, app.state.topology = pppoe, syslog, topology
     app.state.cfg, app.state.notifier = cfg, notifier
 
     basic = HTTPBasic(auto_error=False)
@@ -160,6 +174,10 @@ def create_app(
     def app_js():
         return _page("app.js", "application/javascript")
 
+    @app.get("/network.js", dependencies=[Depends(viewer)], include_in_schema=False)
+    def network_js():
+        return _page("network.js", "application/javascript")
+
     @app.get("/style.css", dependencies=[Depends(viewer)], include_in_schema=False)
     def style_css():
         return _page("style.css", "text/css")
@@ -192,7 +210,7 @@ def create_app(
                 }
             )
         alerts = db.query(
-            "SELECT a.id, a.router_id, r.name AS router, a.iface, a.kind, a.severity, a.message, "
+            "SELECT a.id, a.router_id, COALESCE(r.name, CASE WHEN a.router_id = 0 THEN 'OLT' END) AS router, a.iface, a.kind, a.severity, a.message, "
             "a.value, a.started_at, a.acked_at FROM alerts a "
             "LEFT JOIN routers r ON r.id = a.router_id WHERE a.resolved_at IS NULL "
             "ORDER BY (a.severity = 'critical') DESC, a.started_at DESC"
@@ -216,7 +234,7 @@ def create_app(
         limit = max(1, min(limit, 1000))
         where = "WHERE a.resolved_at IS NULL" if state == "active" else ""
         return db.query(
-            "SELECT a.id, a.router_id, r.name AS router, a.iface, a.kind, a.severity, a.message, "
+            "SELECT a.id, a.router_id, COALESCE(r.name, CASE WHEN a.router_id = 0 THEN 'OLT' END) AS router, a.iface, a.kind, a.severity, a.message, "
             "a.value, a.started_at, a.resolved_at, a.acked_at FROM alerts a "
             f"LEFT JOIN routers r ON r.id = a.router_id {where} "
             "ORDER BY a.started_at DESC LIMIT ? OFFSET ?",
@@ -455,6 +473,38 @@ def create_app(
             (*params, max(1, min(limit, 1000))),
         )
         return {"now": time.time(), "events": _with_reason(rows)}
+
+    # --------------------------------------------------- OLT / PON / mapa de red
+
+    @app.get("/api/network", dependencies=[Depends(viewer)])
+    def network():
+        return topology.snapshot()
+
+    @app.get("/api/olts", dependencies=[Depends(admin)])
+    def olts_list():
+        return topology.olts()
+
+    @app.post("/api/olts", dependencies=[Depends(admin)])
+    def olts_create(body: OltIn):
+        try:
+            return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons])}
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.put("/api/olts/{oid}", dependencies=[Depends(admin)])
+    def olts_update(oid: int, body: OltIn):
+        try:
+            return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons], oid)}
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except KeyError:
+            raise HTTPException(404, "OLT no encontrada") from None
+
+    @app.delete("/api/olts/{oid}", dependencies=[Depends(admin)])
+    def olts_delete(oid: int):
+        if not topology.delete_olt(oid):
+            raise HTTPException(404, "OLT no encontrada")
+        return {"deleted": oid}
 
     @app.get("/api/pppoe/syslog", dependencies=[Depends(admin)])
     def pppoe_syslog():

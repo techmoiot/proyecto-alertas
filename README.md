@@ -12,6 +12,7 @@ pantalla, con sonido y color, cuando:
 | **Router sin respuesta** | el MikroTik deja de contestar por la API |
 | **Cliente PPPoE desconectado** | un cliente que estaba conectado desaparece de `/ppp/active` (con el motivo, si llega el log) |
 | **Caída masiva PPPoE** | se caen muchos clientes a la vez: UNA alerta crítica en vez de cientos |
+| **Sector caído (PON)** | la mayoría de los clientes de un PON/VLAN se caen juntos: se ve en el mapa de la red |
 
 Es liviano (Python + SQLite, sin Docker ni servicios externos): medido en pruebas,
 usa unos 55 MB de RAM con dos routers, así que entra en un LXC chico.
@@ -110,6 +111,32 @@ Los routers que ya estaban conectados necesitan volver a correr el script (o agr
 mano el envío de log) para mandar el syslog; la lectura de `/ppp/active` funciona sin eso,
 con el mismo usuario de solo lectura.
 
+## Mapa de la red (OLT → PON → pools → clientes)
+
+Pestaña **Red**: un grafo estilo Obsidian con la OLT como punto central, un nodo por
+PON (una VLAN por PON), los dos pools de cada VLAN —**Internet** (azul) y **TV** (violeta)—
+y cada cliente como un punto unido a su pool. Verde = conectado, ámbar = en espera,
+rojo = caído. Si un sector se cae, el PON se pone rojo y pulsa, aparece un halo rojo
+sobre todo su grupo y se genera una alerta crítica «Sector caído».
+
+- **Carga:** *Configuración → OLT y PON*. Poné el nombre, la cantidad de PON (16, o los
+  puertos que tenga tu OLT), la VLAN del primero y la red de cada VLAN, por ejemplo
+  `10.10.{n}.0/24` (`{n}` = número de PON, `{v}` = VLAN). Cada red se parte en dos /25:
+  la primera mitad es Internet y la segunda TV. Después podés corregir cada fila a mano.
+- **Cómo ubica a los clientes:** por la **IP** que les da el PPPoE (`/ppp/active`). No hay
+  que cargar nada por cliente; si la IP cae en el pool de un PON, el cliente va ahí.
+  Los que no caen en ningún pool se cuentan aparte («fuera de las VLAN»).
+- **Alerta de sector:** se dispara cuando al menos el 50 % de los clientes conocidos de un
+  PON están caídos a la vez (mínimo 4 clientes, sostenido 30 s). Se resuelve cuando bajan
+  de la mitad de ese umbral. Los tres valores se cambian en *Umbrales y detección*.
+  Es independiente de la «caída masiva» y de las alertas por cliente: te dice **qué sector**
+  es, no solo cuántos clientes.
+- **Uso:** tocá un PON para ver su detalle (ocupación de cada pool y clientes caídos),
+  doble toque para acercar, rueda o pellizco para el zoom, arrastrá para mover. Hay botón
+  de pantalla completa para la TV.
+- **Limitación:** solo se ven los clientes que aparecen en `/ppp/active` (PPPoE). Si los
+  decodificadores de TV no hacen PPPoE (IPoE/DHCP), el pool de TV figura vacío.
+
 ## Pantalla / TV
 
 Abrí el panel en el navegador de la pantalla. El sonido se activa con el botón
@@ -137,8 +164,8 @@ MKMON_DEMO=1 MKMON_ADMIN_PASSWORD=demo venv/bin/python -m app
 ```
 
 Abrí http://localhost:8080 (usuario `admin`). Simula dos routers con tráfico, un pico
-de consumo, una caída de enlace y caídas de clientes PPPoE (individuales y una masiva)
-que se repiten cada 6 minutos.
+de consumo, una caída de enlace, caídas de clientes PPPoE (individuales y una masiva)
+y una OLT de 6 PON con sectores que se caen, todo repetido cada 6 minutos.
 
 ## Configuración
 
@@ -172,6 +199,7 @@ falso del protocolo API de RouterOS (login, interfaces, `/ppp/active`, caída y 
 
 ## Próximos pasos
 
+- **Consumo de las interfaces de la OLT / ONT** (hoy el mapa muestra conectado/caído).
 - **Consumo anormal por cliente PPPoE** (queues o contadores por sesión).
 - Alertas por caída anormal de tráfico (enlace arriba pero sin tráfico).
 - Más de un usuario / usuarios de solo lectura.

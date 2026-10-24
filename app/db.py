@@ -97,6 +97,22 @@ CREATE TABLE IF NOT EXISTS pppoe_events(
 );
 CREATE INDEX IF NOT EXISTS idx_pppoe_events_ts ON pppoe_events(ts);
 CREATE INDEX IF NOT EXISTS idx_pppoe_events_user ON pppoe_events(router_id, user, ts);
+
+CREATE TABLE IF NOT EXISTS olts(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS pons(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    olt_id INTEGER NOT NULL,
+    pos INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL,
+    vlan INTEGER NOT NULL DEFAULT 0,
+    inet_cidr TEXT NOT NULL DEFAULT '',
+    tv_cidr TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_pons_olt ON pons(olt_id, pos);
 """
 
 # Columnas agregadas después de la primera versión: se suman a bases ya existentes.
@@ -127,6 +143,9 @@ DEFAULT_SETTINGS: dict[str, float] = {
     "pppoe_grace_s": 60,         # un cliente debe seguir caído este tiempo para alertar
     "pppoe_mass_threshold": 20,  # desconexiones en la ventana para tratarlo como caída masiva
     "pppoe_mass_window_s": 60,   # ventana (s) para detectar la caída masiva
+    "pon_down_pct": 50,          # % de clientes de un PON caídos para considerar el sector caído
+    "pon_min_clients": 4,        # un PON con menos clientes conocidos no genera alerta de sector
+    "pon_down_after_s": 30,      # segundos sostenido antes de alertar (y antes de resolver)
     "pppoe_expire_h": 24,        # horas que una alerta de cliente caído queda activa
 }
 

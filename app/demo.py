@@ -21,10 +21,19 @@ DEMO_SETTINGS = {
     "pppoe_grace_s": 20,
     "pppoe_mass_threshold": 15,
     "pppoe_mass_window_s": 30,
+    "pon_down_after_s": 10,
+    "pon_min_clients": 4,
+    "pon_down_pct": 50,
 }
 
 # Cantidad de clientes PPPoE simulados por router.
-PPPOE_CLIENTS = {"Demo-Core": 60}
+PPPOE_CLIENTS = {"Demo-Core": 120}
+
+# OLT de ejemplo: 6 PON de 20 clientes (16 de Internet + 4 de TV). Cada PON tiene su VLAN
+# y una red /24 partida en dos /25: la primera para Internet y la segunda para TV.
+DEMO_PONS = 6
+CLIENTS_PER_PON = 20
+INET_PER_PON = 16
 
 # Escenario PPPoE (se repite cada 6 minutos): (clientes, desde s, hasta s, motivo)
 PPPOE_SCENARIO = [
@@ -32,7 +41,15 @@ PPPOE_SCENARIO = [
     ([12], 60, 200, "peer is not responding"),        # caída individual con alerta
     ([20], 120, 170, "session closed"),
     (list(range(21, 51)), 250, 300, "peer is not responding"),   # caída masiva (30 clientes)
+    (list(range(101, 121)), 305, 352, "peer is not responding"),  # se cae el PON 6 completo
 ]
+
+
+def demo_address(i: int) -> str:
+    """IP del cliente i (1..120): su PON define la red, y los últimos 4 de cada PON son de TV."""
+    pon, k = divmod(i - 1, CLIENTS_PER_PON)
+    host = 1 + k if k < INET_PER_PON else 129 + (k - INET_PER_PON)
+    return f"10.{101 + pon}.0.{host}"
 
 # nombre -> interfaces: (nombre, tipo, comentario, rx base Mbps, tx base Mbps)
 PROFILES = {
@@ -59,6 +76,13 @@ def apply_demo(db) -> None:
             "INSERT OR IGNORE INTO routers(name, host, port, username, password, updated_at) "
             "VALUES(?,?,?,?,?,?)",
             (name, f"demo-{i}", 8728, "demo", "demo", now),
+        )
+    if not db.query("SELECT 1 FROM olts"):
+        oid = db.execute("INSERT INTO olts(name) VALUES('OLT-Demo')").lastrowid
+        db.executemany(
+            "INSERT INTO pons(olt_id, pos, name, vlan, inet_cidr, tv_cidr) VALUES(?,?,?,?,?,?)",
+            [(oid, n, f"PON {n + 1}", 101 + n, f"10.{101 + n}.0.0/25", f"10.{101 + n}.0.128/25")
+             for n in range(DEMO_PONS)],
         )
 
 
@@ -108,7 +132,7 @@ class DemoClient:
             {
                 "name": self._client_name(i),
                 "service": "pppoe",
-                "address": f"10.20.{i // 250}.{i % 250 + 1}",
+                "address": demo_address(i),
                 "caller-id": f"AA:BB:CC:00:{i // 256:02X}:{i % 256:02X}",
                 "uptime": f"{(up_s // 3600) + i}h{(up_s % 3600) // 60}m",
             }

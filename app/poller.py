@@ -156,11 +156,13 @@ class Worker(threading.Thread):
 
 
 class Poller:
-    def __init__(self, db, engine, factory: Callable[[dict], Any] = RouterClient, pppoe=None):
+    def __init__(self, db, engine, factory: Callable[[dict], Any] = RouterClient, pppoe=None,
+                 topology=None):
         self.db = db
         self.engine = engine
         self.factory = factory
         self.pppoe = pppoe
+        self.topology = topology
         self.workers: dict[int, Worker] = {}
         self._lock = threading.Lock()
         self._stop_evt = threading.Event()
@@ -202,6 +204,8 @@ class Poller:
         while not self._stop_evt.wait(2.0):
             try:
                 self.sync()
+                if self.topology is not None:
+                    self.topology.evaluate()
                 if time.time() - self._last_prune >= PRUNE_EVERY_S:
                     self.engine.prune()
                     if self.pppoe is not None:

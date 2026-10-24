@@ -15,6 +15,7 @@ const KIND_ES = {
   router_down: "Router sin respuesta",
   pppoe_down: "Cliente PPPoE caído",
   pppoe_mass: "Caída masiva PPPoE",
+  pon_down: "Sector caído (PON)",
 };
 
 function fmtRate(bps) {
@@ -164,12 +165,13 @@ function alertHTML(a) {
   const action = a.acked_at
     ? '<span class="muted">reconocida</span>'
     : `<button class="ghost small" data-ack="${a.id}">Reconocer</button>`;
+  const map = a.kind === "pon_down" ? ' <button class="ghost small" data-tabgo="network">Ver mapa</button>' : "";
   return `<div class="${cls}">
     <div class="icon">${icon}</div>
     <div><div class="where">${where} <span class="pill">${esc(KIND_ES[a.kind] || a.kind)}</span></div>
       <div class="msg">${esc(a.message)}</div>
       <div class="when">hace ${fmtDur(S.now - a.started_at)} · desde ${fmtDateTime(a.started_at)}</div></div>
-    <div class="actions">${action}</div></div>`;
+    <div class="actions">${action}${map}</div></div>`;
 }
 
 function rateRow(dir, cls, bps, maxMbps, base) {
@@ -363,7 +365,7 @@ function closeModal() {
 
 /* -------------------------------------------------------------------- PPPoE */
 
-const STATUS_ES = { up: "conectado", alert: "ALERTA", grace: "en espera", mass: "caída masiva" };
+const STATUS_ES = { up: "conectado", alert: "ALERTA", grace: "en espera", mass: "caída masiva", exp: "no volvió" };
 
 function ago(ts, now) {
   return ts ? "hace " + fmtDur(now - ts) : "—";
@@ -544,6 +546,9 @@ const SETTING_FIELDS = [
   ["pppoe_grace_s", "Segundos caído antes de alertar", "Si el cliente se reconecta antes, no se alerta: en PPPoE es normal."],
   ["pppoe_mass_threshold", "Clientes caídos a la vez = caída masiva", "Se avisa UNA alerta crítica en vez de una por cliente. 0 = desactivado."],
   ["pppoe_mass_window_s", "Ventana de la caída masiva (s)", "Tiempo en el que se cuentan las desconexiones."],
+  ["pon_down_pct", "Sector caído: % de clientes caídos", "Si un PON tiene al menos este % de sus clientes sin conexión, se alerta el sector. 0 = apagado."],
+  ["pon_min_clients", "Sector caído: mínimo de clientes del PON", "Un PON con menos clientes conocidos no genera alerta de sector."],
+  ["pon_down_after_s", "Sector caído: segundos sostenido", "Tiempo que debe mantenerse para alertar (y para resolver)."],
   ["pppoe_expire_h", "Horas hasta dar por vencida una alerta", "Los clientes que no vuelven (bajas) dejan de alertar pasado este tiempo."],
 ];
 
@@ -589,6 +594,10 @@ async function renderConfig() {
           <span class="muted">Contiene el token de registro: no lo compartas fuera de tu equipo.</span></div>
         <pre class="script" id="scriptText">${esc(script)}</pre></div>
 
+      <div class="card"><h2>OLT y PON (mapa de red)</h2>
+        <p class="muted">Cargá cada OLT con sus PON: una VLAN por PON y dos pools (Internet y TV). Los clientes se ubican solos por la IP que les da el PPPoE.</p>
+        <div id="oltBox"><p class="muted">Cargando…</p></div></div>
+
       <div class="card"><h2>Routers</h2>
         <div class="tablewrap">${routers.length ? `<table><thead><tr><th>Nombre</th><th>Dirección</th><th>Usuario API</th><th>Tipos leídos</th><th>PPPoE</th><th>Estado</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">Sin routers todavía.</p>'}</div>
         <h3 style="margin-top:1rem" id="formTitle">Agregar manualmente</h3>
@@ -626,6 +635,7 @@ async function renderConfig() {
         <p>Log de PPPoE (syslog UDP): <b>${S && S.info.syslog_listening ? "escuchando en el puerto " + S.info.syslog_port : "apagado"}</b>.
         Se cambia con <code>MKMON_SYSLOG_PORT</code> (0 = apagado).</p></div>`;
 
+    if (typeof renderOltConfig === "function") renderOltConfig();
     if (cfgRouter != null) renderIfaces();
   } catch (e) {
     box.innerHTML = `<div class="card router-err">${esc(e.message)}</div>`;
@@ -714,11 +724,13 @@ async function runTest(payload) {
 /* ----------------------------------------------------------------- eventos */
 
 function showTab(name) {
+  if (tab === "network" && name !== "network" && typeof netStop === "function") netStop();
   tab = name;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  ["panel", "pppoe", "history", "config"].forEach((n) => ($("#tab-" + n).hidden = n !== name));
+  ["panel", "pppoe", "network", "history", "config"].forEach((n) => ($("#tab-" + n).hidden = n !== name));
   if (name === "panel" && S) renderPanel();
   if (name === "pppoe") renderPppoe();
+  if (name === "network") netStart();
   if (name === "history") renderHistory();
   if (name === "config") renderConfig();
 }
