@@ -145,9 +145,12 @@ function renderMagiUnits() {
   $("#magiUnits").dataset.state = worst;
 }
 
+let ME = null;   // { authed, user, role } de /api/me
+
 async function loadMe() {
   try {
     const me = await api("/api/me");
+    ME = me;
     const b = $("#logoutBtn");
     b.hidden = false;
     b.textContent = me.authed ? "Salir" : "Entrar";
@@ -591,6 +594,12 @@ let editingId = null;
 
 async function renderConfig() {
   const box = $("#configBox");
+  if (ME && ME.authed && ME.role !== "admin") {
+    // Un usuario de solo lectura únicamente puede cambiar su propia contraseña.
+    box.innerHTML = '<div class="card"><h2>Mi cuenta</h2><div id="usersBox"></div></div>';
+    renderUsers();
+    return;
+  }
   try {
     const [routers, settings, script] = await Promise.all([
       api("/api/routers"),
@@ -618,6 +627,8 @@ async function renderConfig() {
     ).join("");
 
     box.innerHTML = `
+      <div class="card"><h2>Usuarios y contraseñas</h2><div id="usersBox"><p class="muted">Cargando…</p></div></div>
+
       <div class="card"><h2>Conectar un MikroTik nuevo</h2>
         <ol class="steps">
           <li>Copiá el script de abajo y pegalo en una terminal del MikroTik (Winbox → New Terminal).</li>
@@ -672,6 +683,7 @@ async function renderConfig() {
         <p>Log de PPPoE (syslog UDP): <b>${S && S.info.syslog_listening ? "escuchando en el puerto " + S.info.syslog_port : "apagado"}</b>.
         Se cambia con <code>MKMON_SYSLOG_PORT</code> (0 = apagado).</p></div>`;
 
+    if (typeof renderUsers === "function") renderUsers();
     if (typeof renderRemote === "function") renderRemote();
     if (typeof renderOltConfig === "function") renderOltConfig();
     if (cfgRouter != null) renderIfaces();

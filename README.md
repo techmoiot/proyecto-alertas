@@ -256,3 +256,24 @@ systemd/        unidad del servicio
 tests/          pruebas automáticas
 install.sh      instalador para el LXC  ·  uninstall.sh
 ```
+
+
+## Usuarios y contraseñas
+
+En **Configuración → Usuarios y contraseñas** (solo administradores) podés agregar usuarios, cambiarles la
+contraseña, darles permiso de **Administrador** (cambia todo) o **Solo ver** (mira el panel y el mapa, ideal
+para la pantalla/TV) y eliminarlos. Cada usuario puede cambiar su propia contraseña con la actual. Las
+contraseñas se guardan con scrypt (nunca en claro) y, al cambiarlas, las sesiones abiertas de ese usuario se cierran.
+Siempre queda al menos un administrador.
+
+El usuario inicial (`admin`) se crea en la primera instalación con la contraseña que muestra el instalador;
+desde ahí manda la base de datos (`MKMON_ADMIN_PASSWORD` solo siembra el primer arranque).
+**Si olvidás la contraseña**, en el servidor: `magi-passwd` (o `magi-passwd otrousuario`) pide una nueva y deja
+a ese usuario como administrador.
+
+## Tarjetas de la OLT
+
+Al agregar o editar una OLT elegís **cuántas tarjetas** tiene y **cuántos puertos PON por tarjeta**
+(típico 8 o 16). «Generar» crea todos los PON (`PON 2/3` = tarjeta 2, puerto 3) y cada fila tiene su
+selector de tarjeta para corregir a mano; «Detectar» desde el MikroTik los reparte entre las tarjetas.
+En el mapa, los PON se agrupan por tarjeta con una banda que se pone roja/naranja si caen sus PON.

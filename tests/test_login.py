@@ -109,7 +109,7 @@ def test_public_view_allows_reading_without_login_but_not_changes():
     with TestClient(new_app(public_view=True)) as c:
         assert c.get("/api/state").status_code == 200
         assert c.get("/", follow_redirects=False).status_code == 200
-        assert c.get("/api/me").json() == {"authed": False, "user": None, "public_view": True}
+        assert c.get("/api/me").json() == {"authed": False, "user": None, "role": None, "public_view": True}
         assert c.post("/api/routers", json={}).status_code in (401, 422)
         assert c.get("/api/settings").status_code == 401
 
@@ -118,9 +118,12 @@ def test_changing_the_password_invalidates_old_sessions(tmp_path):
     db = str(tmp_path / "m.db")
     with TestClient(new_app(db_path=db)) as c:
         login(c)
-        token = c.cookies.get("magi_session")
-        assert c.get("/api/state").status_code == 200
-    with TestClient(new_app(db_path=db, admin_password="otra-clave")) as c2:
-        c2.cookies.set("magi_session", token)
-        assert c2.get("/api/state").status_code == 401
-        assert login(c2, pw="otra-clave").status_code == 200
+        old = c.cookies.get("magi_session")
+        assert c.post("/api/me/password", json={"current": "pw-admin", "new": "otra-clave-9"}).status_code == 200
+        assert c.get("/api/state").status_code == 200                      # su propia sesión se renueva
+    with TestClient(new_app(db_path=db, admin_password="ignorada-ahora")) as c2:
+        c2.cookies.set("magi_session", old)
+        assert c2.get("/api/state").status_code == 401                     # la sesión vieja ya no vale
+        assert login(c2, pw="ignorada-ahora").status_code == 401           # el entorno solo siembra el primer arranque
+        assert login(c2, pw="pw-admin").status_code == 401
+        assert login(c2, pw="otra-clave-9").status_code == 200

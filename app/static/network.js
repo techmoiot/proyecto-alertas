@@ -19,6 +19,7 @@ const NET = {
   raf: 0,
   timer: null,
   size: { w: 0, h: 0, dpr: 1 },
+  cards: [],           // tarjetas de la OLT mirada: [{ no, ids: [nodos PON] }]
   selected: null,      // id del nodo PON elegido
   hover: null,
   pointers: new Map(),
@@ -87,16 +88,25 @@ function netApply(snap) {
   NET.oltId = olt.id;
 
   const n = olt.pons.length;
+  // Los PON se agrupan por tarjeta: cada tarjeta ocupa un tramo del anillo, con un hueco entre tarjetas.
+  const ordered = [...olt.pons].sort((a, b) => (a.card || 1) - (b.card || 1));
+  const cardNos = [...new Set(ordered.map((p) => p.card || 1))];
+  const multi = (olt.cards || 1) > 1 && cardNos.length > 0;
+  const gap = multi && cardNos.length > 1 ? 0.9 : 0;
+  const slotOf = new Map();
+  ordered.forEach((p, i) => slotOf.set(p.id, i + cardNos.indexOf(p.card || 1) * gap));
+  const slots = n + (gap ? cardNos.length * gap : 0);
+  NET.cards = multi ? cardNos.map((no) => ({ no, ids: ordered.filter((p) => (p.card || 1) === no).map((p) => "pon:" + p.id) })) : [];
   const discs = olt.pons.map((p) => p.pools.map((pl) => netDiscRadius(pl.clients.length)));
   const maxDisc = Math.max(40, ...discs.flat());
   const foot = 4 * maxDisc + 60;
-  const R = Math.max(260, (n * foot) / (2 * Math.PI));
+  const R = Math.max(260, (slots * foot) / (2 * Math.PI));
 
-  const hub = netUpsert("olt:" + olt.id, { type: "olt", r: 24, cr: 40, label: olt.name, sub: n + " PON", status: "olt" });
+  const hub = netUpsert("olt:" + olt.id, { type: "olt", r: 24, cr: 40, label: olt.name, sub: n + " PON" + (multi ? ` · ${olt.cards} tarjetas` : ""), status: "olt" });
   seen.add(hub.id);
 
   olt.pons.forEach((p, i) => {
-    const ang = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(n, 1);
+    const ang = -Math.PI / 2 + (2 * Math.PI * slotOf.get(p.id)) / Math.max(slots, 1);
     const ox = Math.cos(ang), oy = Math.sin(ang);
     const tx = -oy, ty = ox;
     const pid = "pon:" + p.id;
@@ -258,6 +268,45 @@ function netFit() {
   NET.fitted = true;
 }
 
+/* Banda curva por tarjeta, entre la OLT y sus PON, con el nombre de la tarjeta. */
+function netDrawCards(ctx, inv, pulse) {
+  if (!NET.cards || !NET.cards.length) return;
+  const hub = NET.nodes.find((n) => n.type === "olt");
+  if (!hub) return;
+  const TAU = 2 * Math.PI;
+  for (const c of NET.cards) {
+    const ms = c.ids.map((id) => NET.byId.get(id)).filter(Boolean);
+    if (!ms.length) continue;
+    const ref = Math.atan2(ms[0].y - hub.y, ms[0].x - hub.x);
+    const rel = ms.map((m) => {
+      let d = Math.atan2(m.y - hub.y, m.x - hub.x) - ref;
+      while (d > Math.PI) d -= TAU;
+      while (d < -Math.PI) d += TAU;
+      return d;
+    });
+    const lo = Math.min(...rel), hi = Math.max(...rel);
+    const r = (ms.reduce((s, m) => s + Math.hypot(m.x - hub.x, m.y - hub.y), 0) / ms.length) * 0.6;
+    const down = ms.filter((m) => m.status === "down").length;
+    const rgb = down === ms.length ? "240,68,58" : down ? "245,165,36" : "139,151,168";
+    const alpha = down === ms.length ? 0.3 + 0.25 * pulse : down ? 0.35 : 0.22;
+    ctx.lineCap = "round";
+    ctx.lineWidth = 12 * inv;
+    ctx.strokeStyle = `rgba(${rgb},${alpha})`;
+    ctx.beginPath(); ctx.arc(hub.x, hub.y, r, ref + lo - 0.05, ref + hi + 0.05); ctx.stroke();
+    ctx.lineCap = "butt";
+    const mid = ref + (lo + hi) / 2;
+    const px = Math.max(9, 11 * Math.min(inv * 0.85, 2.4));
+    const lx = hub.x + Math.cos(mid) * r * 0.82, ly = hub.y + Math.sin(mid) * r * 0.82 + px * 0.35;
+    ctx.textAlign = "center";
+    ctx.font = `700 ${px}px system-ui, sans-serif`;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(11,15,21,0.92)"; ctx.lineWidth = px * 0.3;
+    ctx.fillStyle = down ? `rgb(${rgb})` : "#9aa7b8";
+    const label = `Tarjeta ${c.no}` + (down ? ` · ${down}/${ms.length} caídos` : "");
+    ctx.strokeText(label, lx, ly); ctx.fillText(label, lx, ly);
+  }
+}
+
 function netDraw(t) {
   const ctx = NET.ctx;
   if (!ctx) return;
@@ -286,6 +335,8 @@ function netDraw(t) {
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(sx, sy, r * 1.15, 0, 6.2832); ctx.fill();
   }
+
+  netDrawCards(ctx, inv, pulse);
 
   // líneas
   ctx.lineWidth = inv * 0.9;
@@ -704,7 +755,7 @@ document.addEventListener("fullscreenchange", () => setTimeout(() => { netResize
 
 /* ====================================================== configuración de OLT */
 
-let OLT_EDIT = null;   // { id, name, pons: [{name, vlan, inet_cidr, tv_cidr}] }
+let OLT_EDIT = null;   // { id, name, cards, ppc, pons: [{name, vlan, card, inet_cidr, tv_cidr}] }
 let OLT_ROUTERS = [];  // routers para «Detectar desde el MikroTik»
 let OLT_INFO = "";     // resultado de la última detección
 
@@ -726,14 +777,17 @@ function splitPool(cidr) {
   return [`${intToIp(net)}/${len + 1}`, `${intToIp(net + size / 2)}/${len + 1}`];
 }
 
-function oltGenerate(count, vlan0, tpl) {
+/* Genera tarjetas × puertos PON. Con varias tarjetas los PON se llaman «PON tarjeta/puerto». */
+function oltGenerate(cards, perCard, vlan0, tpl) {
   const pons = [];
+  const count = cards * perCard;
   for (let i = 1; i <= count; i++) {
+    const card = Math.floor((i - 1) / perCard) + 1, port = ((i - 1) % perCard) + 1;
     const vlan = vlan0 + i - 1;
     const cidr = tpl.replaceAll("{n}", i).replaceAll("{v}", vlan);
     const halves = splitPool(cidr);
     if (!halves) throw new Error(`La plantilla de red no sirve: «${cidr}». Ejemplo: 10.10.{n}.0/24`);
-    pons.push({ name: `PON ${i}`, vlan, inet_cidr: halves[0], tv_cidr: halves[1] });
+    pons.push({ name: cards > 1 ? `PON ${card}/${port}` : `PON ${i}`, vlan, card, inet_cidr: halves[0], tv_cidr: halves[1] });
   }
   return pons;
 }
@@ -745,10 +799,10 @@ async function renderOltConfig() {
     const [olts, routers] = await Promise.all([api("/api/olts"), api("/api/routers")]);
     OLT_ROUTERS = routers;
     const list = olts.length
-      ? `<table><thead><tr><th>OLT</th><th>PON</th><th>VLAN</th><th></th></tr></thead><tbody>${olts
+      ? `<table><thead><tr><th>OLT</th><th>Tarjetas</th><th>PON</th><th>VLAN</th><th></th></tr></thead><tbody>${olts
           .map((o) => {
             const v = o.pons.map((p) => p.vlan).filter(Boolean);
-            return `<tr><td><b>${esc(o.name)}</b></td><td>${o.pons.length}</td>
+            return `<tr><td><b>${esc(o.name)}</b></td><td>${o.cards}${o.ports_per_card ? ` × ${o.ports_per_card} puertos` : ""}</td><td>${o.pons.length}</td>
               <td>${v.length ? Math.min(...v) + "–" + Math.max(...v) : "—"}</td>
               <td class="row"><button class="ghost small" data-oltedit="${o.id}">Editar</button>
               <button class="danger small" data-oltdel="${o.id}">Eliminar</button></td></tr>`;
@@ -770,6 +824,7 @@ function oltRenderForm() {
   const rows = OLT_EDIT.pons
     .map(
       (p, i) => `<tr><td><input data-pon="${i}" data-k="name" value="${esc(p.name)}" maxlength="40">${p.from ? `<small class="muted" style="display:block">${esc(p.from)}</small>` : ""}</td>
+      <td><select data-pon="${i}" data-k="card">${Array.from({ length: OLT_EDIT.cards }, (_, c) => `<option value="${c + 1}" ${(p.card || 1) === c + 1 ? "selected" : ""}>${c + 1}</option>`).join("")}</select></td>
       <td><input data-pon="${i}" data-k="vlan" type="number" min="0" max="4094" value="${p.vlan || ""}"></td>
       <td><input data-pon="${i}" data-k="inet_cidr" value="${esc(p.inet_cidr)}" placeholder="10.10.1.0/25"></td>
       <td><input data-pon="${i}" data-k="tv_cidr" value="${esc(p.tv_cidr)}" placeholder="10.10.1.128/25"></td>
@@ -779,7 +834,8 @@ function oltRenderForm() {
   f.innerHTML = `<h3 style="margin-top:1rem">${OLT_EDIT.id ? "Editar OLT" : "Nueva OLT"}</h3>
     <div class="form-grid">
       <div class="field"><label>Nombre de la OLT</label><input id="olt_name" value="${esc(OLT_EDIT.name)}" placeholder="OLT-Centro" maxlength="40"></div>
-      <div class="field"><label>Cantidad de PON</label><input id="olt_count" type="number" min="1" max="128" value="16"></div>
+      <div class="field"><label>Tarjetas de la OLT</label><input id="olt_cards" type="number" min="1" max="32" value="${OLT_EDIT.cards}"><small>Cuántas tarjetas de PON tiene instaladas.</small></div>
+      <div class="field"><label>Puertos PON por tarjeta</label><input id="olt_ppc" type="number" min="1" max="64" value="${OLT_EDIT.ppc}"><small>Típico: 8 o 16. Total: <b id="olt_total">${OLT_EDIT.cards * OLT_EDIT.ppc}</b> PON.</small></div>
       <div class="field"><label>VLAN del primer PON</label><input id="olt_vlan0" type="number" min="1" max="4094" value="101"></div>
       <div class="field"><label>Red de cada VLAN</label><input id="olt_tpl" value="10.10.{n}.0/24">
         <small>{n} = número de PON · {v} = VLAN. Se parte en dos /25: Internet (primera mitad) y TV (segunda).</small></div>
@@ -798,8 +854,8 @@ function oltRenderForm() {
     <div class="row" style="margin:.6rem 0"><button class="ghost" id="oltGen">Generar los PON a mano</button>
       <button class="ghost" id="oltAddRow">Agregar un PON</button>
       <span class="muted">Después podés corregir cualquier fila a mano.</span></div>
-    <div class="tablewrap"><table><thead><tr><th>PON</th><th>VLAN</th><th>Pool Internet</th><th>Pool TV</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="muted">Generá los PON o agregá uno.</td></tr>'}</tbody></table></div>
+    <div class="tablewrap"><table><thead><tr><th>PON</th><th>Tarjeta</th><th>VLAN</th><th>Pool Internet</th><th>Pool TV</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="muted">Generá los PON o agregá uno.</td></tr>'}</tbody></table></div>
     <div class="row" style="margin-top:.8rem"><button id="oltSave">Guardar OLT</button>
       <button class="ghost" id="oltCancel">Cancelar</button></div>`;
 }
@@ -808,10 +864,21 @@ document.addEventListener("input", (ev) => {
   const el = ev.target;
   if (!OLT_EDIT) return;
   if (el.id === "olt_name") OLT_EDIT.name = el.value;
-  else if (el.dataset && el.dataset.pon !== undefined) {
+  else if (el.id === "olt_cards" || el.id === "olt_ppc") {
+    const v = Math.max(1, parseInt(el.value, 10) || 1);
+    if (el.id === "olt_cards") OLT_EDIT.cards = Math.min(v, 32); else OLT_EDIT.ppc = Math.min(v, 64);
+    const tot = $("#olt_total");
+    if (tot) tot.textContent = OLT_EDIT.cards * OLT_EDIT.ppc;
+  } else if (el.dataset && el.dataset.pon !== undefined) {
     const p = OLT_EDIT.pons[parseInt(el.dataset.pon, 10)];
-    if (p) p[el.dataset.k] = el.dataset.k === "vlan" ? parseInt(el.value, 10) || 0 : el.value;
+    if (p) p[el.dataset.k] = el.dataset.k === "vlan" || el.dataset.k === "card" ? parseInt(el.value, 10) || (el.dataset.k === "card" ? 1 : 0) : el.value;
   }
+});
+
+document.addEventListener("change", (ev) => {
+  if (!OLT_EDIT || (ev.target.id !== "olt_cards" && ev.target.id !== "olt_ppc")) return;
+  for (const p of OLT_EDIT.pons) p.card = Math.min(p.card || 1, OLT_EDIT.cards);
+  oltRenderForm();
 });
 
 document.addEventListener("click", async (ev) => {
@@ -820,13 +887,17 @@ document.addEventListener("click", async (ev) => {
   try {
     if (t.id === "oltNew") {
       OLT_INFO = "";
-      OLT_EDIT = { id: null, name: "", pons: [] };
+      OLT_EDIT = { id: null, name: "", cards: 1, ppc: 16, pons: [] };
       oltRenderForm();
     } else if (t.dataset.oltedit) {
       const olts = JSON.parse($("#oltBox").dataset.olts || "[]");
       const o = olts.find((x) => x.id === parseInt(t.dataset.oltedit, 10));
       OLT_INFO = "";
-      OLT_EDIT = { id: o.id, name: o.name, pons: o.pons.map((p) => ({ name: p.name, vlan: p.vlan, inet_cidr: p.inet_cidr, tv_cidr: p.tv_cidr })) };
+      OLT_EDIT = {
+        id: o.id, name: o.name, cards: o.cards || 1,
+        ppc: o.ports_per_card || Math.max(1, ...Array.from({ length: o.cards || 1 }, (_, c) => o.pons.filter((p) => (p.card || 1) === c + 1).length)),
+        pons: o.pons.map((p) => ({ name: p.name, vlan: p.vlan, card: p.card || 1, inet_cidr: p.inet_cidr, tv_cidr: p.tv_cidr })),
+      };
       oltRenderForm();
       $("#oltForm").scrollIntoView({ behavior: "smooth", block: "center" });
     } else if (t.dataset.oltdel) {
@@ -845,6 +916,13 @@ document.addEventListener("click", async (ev) => {
       $("#oltDetectInfo").textContent = "Leyendo el router…";
       try {
         const res = await api(`/api/routers/${$("#olt_router").value}/detect-vlans`, { method: "POST", body });
+        // Reparte los PON encontrados entre las tarjetas (si no caben, se suman tarjetas).
+        const per = OLT_EDIT.ppc;
+        if (OLT_EDIT.cards * per < res.pons.length) OLT_EDIT.cards = Math.min(32, Math.ceil(res.pons.length / per));
+        res.pons.forEach((p, i) => {
+          p.card = Math.min(OLT_EDIT.cards, Math.floor(i / per) + 1);
+          if (OLT_EDIT.cards > 1) p.name = `PON ${p.card}/${(i % per) + 1}`;
+        });
         OLT_EDIT.pons = res.pons;
         OLT_INFO = res.pons.length
           ? `Se encontraron ${res.pons.length} VLAN con IP (de ${res.vlans_total} VLAN). Cada red se partió en dos mitades: Internet y TV. Quitá las que no son PON (gestión, etc.).`
@@ -855,16 +933,19 @@ document.addEventListener("click", async (ev) => {
       }
       oltRenderForm();
     } else if (t.id === "oltGen") {
-      const count = parseInt($("#olt_count").value, 10) || 0;
-      if (count < 1 || count > 128) throw new Error("La cantidad de PON va de 1 a 128");
+      const cards = parseInt($("#olt_cards").value, 10) || 0, per = parseInt($("#olt_ppc").value, 10) || 0;
+      if (cards < 1 || per < 1) throw new Error("Poné al menos 1 tarjeta y 1 puerto por tarjeta");
+      if (cards * per > 128) throw new Error("Máximo 128 PON por OLT (tarjetas × puertos)");
       const v0 = parseInt($("#olt_vlan0").value, 10) || 1;
       OLT_EDIT.name = $("#olt_name").value;
-      OLT_EDIT.pons = oltGenerate(count, v0, $("#olt_tpl").value);
+      OLT_EDIT.cards = cards; OLT_EDIT.ppc = per;
+      OLT_EDIT.pons = oltGenerate(cards, per, v0, $("#olt_tpl").value);
       oltRenderForm();
     } else if (t.id === "oltAddRow") {
       OLT_EDIT.name = $("#olt_name").value;
       const n = OLT_EDIT.pons.length + 1;
-      OLT_EDIT.pons.push({ name: `PON ${n}`, vlan: 0, inet_cidr: "", tv_cidr: "" });
+      const last = OLT_EDIT.pons.length ? OLT_EDIT.pons[OLT_EDIT.pons.length - 1].card || 1 : 1;
+      OLT_EDIT.pons.push({ name: `PON ${n}`, vlan: 0, card: Math.min(last, OLT_EDIT.cards), inet_cidr: "", tv_cidr: "" });
       oltRenderForm();
     } else if (t.dataset.ponrm !== undefined) {
       OLT_EDIT.pons.splice(parseInt(t.dataset.ponrm, 10), 1);
@@ -873,7 +954,7 @@ document.addEventListener("click", async (ev) => {
       OLT_EDIT = null;
       oltRenderForm();
     } else if (t.id === "oltSave") {
-      const body = { name: OLT_EDIT.name.trim(), pons: OLT_EDIT.pons };
+      const body = { name: OLT_EDIT.name.trim(), cards: OLT_EDIT.cards, ports_per_card: OLT_EDIT.ppc, pons: OLT_EDIT.pons };
       if (OLT_EDIT.id) await api(`/api/olts/${OLT_EDIT.id}`, { method: "PUT", body });
       else await api("/api/olts", { method: "POST", body });
       OLT_EDIT = null;

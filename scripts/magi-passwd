@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Cambia o crea un administrador desde la consola (por si se olvidó la contraseña).
+#   magi-passwd            -> usuario admin
+#   magi-passwd maria      -> ese usuario
+set -euo pipefail
+[ "$(id -u)" -eq 0 ] || { echo "Ejecutalo como root:  sudo magi-passwd" >&2; exit 1; }
+set -a; . /etc/mk-monitor/mk-monitor.env; set +a
+cd /opt/mk-monitor
+exec runuser -u mkmonitor -- /opt/mk-monitor/venv/bin/python -m app passwd "$@"

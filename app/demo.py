@@ -78,10 +78,10 @@ def apply_demo(db) -> None:
             (name, f"demo-{i}", 8728, "demo", "demo", now),
         )
     if not db.query("SELECT 1 FROM olts"):
-        oid = db.execute("INSERT INTO olts(name) VALUES('OLT-Demo')").lastrowid
+        oid = db.execute("INSERT INTO olts(name, cards, ports_per_card) VALUES('OLT-Demo', 2, 3)").lastrowid
         db.executemany(
-            "INSERT INTO pons(olt_id, pos, name, vlan, inet_cidr, tv_cidr) VALUES(?,?,?,?,?,?)",
-            [(oid, n, f"PON {n + 1}", 101 + n, f"10.{101 + n}.0.0/25", f"10.{101 + n}.0.128/25")
+            "INSERT INTO pons(olt_id, pos, name, vlan, card, inet_cidr, tv_cidr) VALUES(?,?,?,?,?,?,?)",
+            [(oid, n, f"PON {n + 1}", 101 + n, n // 3 + 1, f"10.{101 + n}.0.0/25", f"10.{101 + n}.0.128/25")
              for n in range(DEMO_PONS)],
         )
 

@@ -38,7 +38,19 @@ def _parse_cidr(text: str, label: str) -> ipaddress.IPv4Network | None:
     return net
 
 
-def validate_pons(pons: list[dict]) -> list[dict]:
+def validate_layout(cards, ports_per_card) -> tuple[int, int]:
+    try:
+        cards, ports = int(cards or 1), int(ports_per_card or 0)
+    except (TypeError, ValueError):
+        raise ConfigError("Tarjetas y puertos deben ser números") from None
+    if not 1 <= cards <= 32:
+        raise ConfigError("La OLT puede tener de 1 a 32 tarjetas")
+    if not 0 <= ports <= 64:
+        raise ConfigError("Cada tarjeta puede tener de 1 a 64 puertos PON")
+    return cards, ports
+
+
+def validate_pons(pons: list[dict], cards: int = 1, ports_per_card: int = 0) -> list[dict]:
     """Normaliza los PON de una OLT y verifica que los pools no se pisen."""
     if not pons:
         raise ConfigError("La OLT necesita al menos un PON")
@@ -53,13 +65,24 @@ def validate_pons(pons: list[dict]) -> list[dict]:
             raise ConfigError(f"{name}: la VLAN debe ser un número") from None
         if not 0 <= vlan <= 4094:
             raise ConfigError(f"{name}: la VLAN debe estar entre 1 y 4094")
-        row = {"name": name, "vlan": vlan, "inet_cidr": "", "tv_cidr": ""}
+        try:
+            card = int(p.get("card") or 1)
+        except (TypeError, ValueError):
+            raise ConfigError(f"{name}: la tarjeta debe ser un número") from None
+        if not 1 <= card <= cards:
+            raise ConfigError(f"{name}: la tarjeta {card} no existe (la OLT tiene {cards})")
+        row = {"name": name, "vlan": vlan, "card": card, "inet_cidr": "", "tv_cidr": ""}
         for key, label in (("inet_cidr", "Internet"), ("tv_cidr", "TV")):
             net = _parse_cidr(p.get(key, ""), f"{name} / {label}")
             if net is not None:
                 row[key] = str(net)
                 nets.append((net, f"{name} / {label}"))
         out.append(row)
+    if ports_per_card:
+        for c in range(1, cards + 1):
+            n_c = sum(1 for r in out if r["card"] == c)
+            if n_c > ports_per_card:
+                raise ConfigError(f"La tarjeta {c} tiene {n_c} PON pero solo {ports_per_card} puertos")
     names = [r["name"].lower() for r in out]
     if len(set(names)) != len(names):
         raise ConfigError("Hay dos PON con el mismo nombre")
@@ -137,19 +160,22 @@ class Topology:
 
     def olts(self) -> list[dict]:
         out = []
-        for o in self.db.query("SELECT id, name FROM olts ORDER BY name"):
+        for o in self.db.query("SELECT id, name, cards, ports_per_card FROM olts ORDER BY name"):
             pons = self.db.query(
-                "SELECT id, name, vlan, inet_cidr, tv_cidr FROM pons WHERE olt_id=? ORDER BY pos, id",
+                "SELECT id, name, vlan, card, inet_cidr, tv_cidr FROM pons WHERE olt_id=? ORDER BY pos, id",
                 (o["id"],),
             )
-            out.append({"id": o["id"], "name": o["name"], "pons": pons})
+            out.append({"id": o["id"], "name": o["name"], "cards": o["cards"],
+                        "ports_per_card": o["ports_per_card"], "pons": pons})
         return out
 
-    def save_olt(self, name: str, pons: list[dict], olt_id: int | None = None) -> int:
+    def save_olt(self, name: str, pons: list[dict], olt_id: int | None = None,
+                 cards: int = 1, ports_per_card: int = 0) -> int:
         name = (name or "").strip()[:40]
         if not name:
             raise ConfigError("Poné un nombre para la OLT")
-        pons = validate_pons(pons)
+        cards, ports_per_card = validate_layout(cards, ports_per_card)
+        pons = validate_pons(pons, cards, ports_per_card)
         dup = self.db.query("SELECT id FROM olts WHERE lower(name)=lower(?)", (name,))
         if dup and dup[0]["id"] != olt_id:
             raise ConfigError(f"Ya existe una OLT llamada «{name}»")
@@ -170,16 +196,19 @@ class Topology:
                             )
         with self._lock:
             if olt_id is None:
-                olt_id = self.db.execute("INSERT INTO olts(name) VALUES(?)", (name,)).lastrowid
+                olt_id = self.db.execute(
+                    "INSERT INTO olts(name, cards, ports_per_card) VALUES(?,?,?)", (name, cards, ports_per_card)
+                ).lastrowid
             else:
                 if not self.db.query("SELECT 1 FROM olts WHERE id=?", (olt_id,)):
                     raise KeyError(olt_id)
-                self.db.execute("UPDATE olts SET name=? WHERE id=?", (name, olt_id))
+                self.db.execute("UPDATE olts SET name=?, cards=?, ports_per_card=? WHERE id=?",
+                                (name, cards, ports_per_card, olt_id))
                 self._drop_olt_state(olt_id)
                 self.db.execute("DELETE FROM pons WHERE olt_id=?", (olt_id,))
             self.db.executemany(
-                "INSERT INTO pons(olt_id, pos, name, vlan, inet_cidr, tv_cidr) VALUES(?,?,?,?,?,?)",
-                [(olt_id, i, p["name"], p["vlan"], p["inet_cidr"], p["tv_cidr"]) for i, p in enumerate(pons)],
+                "INSERT INTO pons(olt_id, pos, name, vlan, card, inet_cidr, tv_cidr) VALUES(?,?,?,?,?,?,?)",
+                [(olt_id, i, p["name"], p["vlan"], p["card"], p["inet_cidr"], p["tv_cidr"]) for i, p in enumerate(pons)],
             )
             self._index = None
         return olt_id
@@ -277,12 +306,13 @@ class Topology:
                     })
                 m = self._metrics(pools)
                 pons.append({
-                    "id": p["id"], "name": p["name"], "vlan": p["vlan"], "pools": pools_out,
+                    "id": p["id"], "name": p["name"], "vlan": p["vlan"], "card": p["card"], "pools": pools_out,
                     "total": m["total"], "down": m["down"],
                     "pct": round(m["pct"], 1), "alert": self._is_active(p["id"]),
                     "status": self._status(m, p["id"], settings),
                 })
-            out.append({"id": o["id"], "name": o["name"], "pons": pons})
+            out.append({"id": o["id"], "name": o["name"], "cards": o["cards"],
+                        "ports_per_card": o["ports_per_card"], "pons": pons})
         return {"now": now, "olts": out, "unassigned": unassigned}
 
     @staticmethod

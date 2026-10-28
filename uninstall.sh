@@ -9,7 +9,8 @@ systemctl disable --now mk-monitor mk-monitor-wg.path mk-monitor-wg.timer 2>/dev
 systemctl disable --now wg-quick@magi0 2>/dev/null || true
 rm -f /etc/systemd/system/mk-monitor.service /etc/systemd/system/mk-monitor-wg.* /etc/wireguard/magi0.conf
 systemctl daemon-reload
-rm -rf /opt/mk-monitor
+rm -rf /opt/mk-monitor /opt/magi-src
+rm -f /usr/local/bin/magi-update /usr/local/bin/magi-passwd
 
 if [ "${1:-}" = "--purge" ]; then
   rm -rf /etc/mk-monitor /var/lib/mk-monitor

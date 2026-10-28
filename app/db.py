@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS wg_peers(
     created_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    pw_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    created_at REAL NOT NULL,
+    last_login REAL
+);
+
 CREATE TABLE IF NOT EXISTS olts(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE
@@ -128,6 +137,9 @@ CREATE INDEX IF NOT EXISTS idx_pons_olt ON pons(olt_id, pos);
 MIGRATIONS = [
     ("routers", "pppoe_enabled", "INTEGER NOT NULL DEFAULT 1"),
     ("routers", "syslog_ip", "TEXT NOT NULL DEFAULT ''"),
+    ("olts", "cards", "INTEGER NOT NULL DEFAULT 1"),
+    ("olts", "ports_per_card", "INTEGER NOT NULL DEFAULT 0"),
+    ("pons", "card", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 # Valores por defecto de la configuración global. Se editan desde el panel.

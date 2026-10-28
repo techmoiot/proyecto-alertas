@@ -84,7 +84,7 @@ def test_health_is_open_and_everything_else_requires_login(app):
 
 def test_static_pages_are_served(client):
     for path, marker in (("/", "MAGI"), ("/app.js", "refresh"), ("/style.css", "--bg"), ("/network.js", "renderNetwork"),
-                        ("/remote.js", "renderRemote"), ("/login", "MELCHIOR")):
+                        ("/remote.js", "renderRemote"), ("/users.js", "renderUsers"), ("/login", "MELCHIOR")):
         r = client.get(path)
         assert r.status_code == 200 and marker in r.text, path
 

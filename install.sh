@@ -63,6 +63,7 @@ else
 fi
 
 install -m 755 "$SRC/update.sh" /usr/local/bin/magi-update
+install -m 755 "$SRC/scripts/magi-passwd" /usr/local/bin/magi-passwd
 
 say "Preparando la conexión remota (WireGuard)"
 mkdir -p "$CONF_DIR/wg"
@@ -112,9 +113,10 @@ printf '  Panel:      http://%s:%s\n' "$IP" "$PORT"
 printf '  Log PPPoE:  UDP %s (abrilo en el firewall si lo usás)\n' "$(grep -E '^MKMON_SYSLOG_PORT=' "$ENV_FILE" | cut -d= -f2 | grep . || echo 5140)"
 if [ "$FIRST_INSTALL" -eq 1 ]; then
   printf '  Usuario:    admin\n  Contraseña: %s\n\n' "$ADMIN_PASS"
-  printf '  (Quedan guardados en %s)\n' "$ENV_FILE"
+  printf '  (Cambiala en Configuración → Usuarios; si la olvidás: magi-passwd)\n\n' 
 else
-  printf '  Usuario y contraseña: los de %s\n' "$ENV_FILE"
+  printf '  Usuario y contraseña: los que ya usabas. Si olvidaste la clave:  magi-passwd\n\n'
+  printf '  (Los usuarios y contraseñas ahora se administran en Configuración → Usuarios)\n\n' 
 fi
 printf '\nPara actualizar más adelante, desde cualquier carpeta:  magi-update\n'
 printf '\nSiguiente paso: entrá al panel -> Configuración -> "Conectar un MikroTik nuevo"\n'

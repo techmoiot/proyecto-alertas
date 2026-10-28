@@ -47,7 +47,7 @@ def active_pon_alerts(db):
 
 def test_validate_pons_normalizes_and_rejects_bad_input():
     out = validate_pons([{"name": "", "vlan": "101", "inet_cidr": "10.1.0.5/25", "tv_cidr": ""}])
-    assert out == [{"name": "PON 1", "vlan": 101, "inet_cidr": "10.1.0.0/25", "tv_cidr": ""}]
+    assert out == [{"name": "PON 1", "vlan": 101, "card": 1, "inet_cidr": "10.1.0.0/25", "tv_cidr": ""}]
     with pytest.raises(ConfigError, match="no es una red válida"):
         validate_pons([{"name": "A", "inet_cidr": "10.1.0/25"}])
     with pytest.raises(ConfigError, match="VLAN"):
@@ -257,3 +257,29 @@ def test_detect_pons_from_vlans_and_addresses():
     small = detect_pons([{"name": "v", "vlan-id": 5}], [{"address": "10.0.0.1/26", "interface": "v"}])["pons"][0]
     assert small["inet_cidr"] == "10.0.0.0/26" and small["tv_cidr"] == ""
     validate_pons(out["pons"])                                      # lo detectado es una configuración válida
+
+
+def test_cards_layout_is_validated_and_saved(tmp_path):
+    from app.db import DB
+    from app.engine import Engine
+    from app.notify import Notifier
+    from app.pppoe import PPPoEMonitor
+    from app.topology import Topology
+    db = DB(":memory:")
+    eng = Engine(db, Notifier("", ""))
+    topo = Topology(db, eng, PPPoEMonitor(db, eng))
+    pons = [{"name": f"PON {c}/{p}", "vlan": 100 + c * 10 + p, "card": c} for c in (1, 2) for p in (1, 2)]
+    oid = topo.save_olt("OLT-A", pons, cards=2, ports_per_card=2)
+    o = topo.olts()[0]
+    assert (o["cards"], o["ports_per_card"]) == (2, 2)
+    assert [p["card"] for p in o["pons"]] == [1, 1, 2, 2]
+    snap = topo.snapshot()["olts"][0]
+    assert snap["cards"] == 2 and [p["card"] for p in snap["pons"]] == [1, 1, 2, 2]
+    with pytest.raises(ConfigError):                 # tarjeta que no existe
+        topo.save_olt("OLT-A", [{"name": "x", "card": 3}], oid, cards=2, ports_per_card=2)
+    with pytest.raises(ConfigError):                 # más PON que puertos en la tarjeta 1
+        topo.save_olt("OLT-A", [{"name": f"p{i}", "card": 1} for i in range(3)], oid, cards=2, ports_per_card=2)
+    with pytest.raises(ConfigError):
+        topo.save_olt("OLT-A", pons, oid, cards=0, ports_per_card=2)
+    with pytest.raises(ConfigError):
+        topo.save_olt("OLT-A", pons, oid, cards=40, ports_per_card=2)

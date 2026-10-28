@@ -26,6 +26,7 @@ from .poller import Poller, RouterClient
 from .pppoe import PPPoEMonitor, explain_reason
 from .syslog import SyslogReceiver
 from .topology import ConfigError, Topology, detect_pons
+from .users import UserError, Users, fingerprint
 from .wg import RemoteError, WGManager
 
 log = logging.getLogger("mkmonitor")
@@ -69,12 +70,15 @@ class RegisterIn(BaseModel):
 class PonIn(BaseModel):
     name: str = Field("", max_length=40)
     vlan: int = Field(0, ge=0, le=4094)
+    card: int = Field(1, ge=1, le=32)
     inet_cidr: str = Field("", max_length=64)
     tv_cidr: str = Field("", max_length=64)
 
 
 class OltIn(BaseModel):
     name: str = Field(min_length=1, max_length=40)
+    cards: int = Field(1, ge=1, le=32)
+    ports_per_card: int = Field(0, ge=0, le=64)
     pons: list[PonIn] = Field(min_length=1, max_length=128)
 
 
@@ -82,6 +86,22 @@ class LoginIn(BaseModel):
     username: str = Field(max_length=128)
     password: str = Field(max_length=256)
     remember: bool = False
+
+
+class UserIn(BaseModel):
+    username: str = Field(max_length=40)
+    password: str = Field(max_length=256)
+    role: str = "viewer"
+
+
+class UserEdit(BaseModel):
+    password: str | None = Field(None, max_length=256)
+    role: str | None = None
+
+
+class PasswordChange(BaseModel):
+    current: str = Field(max_length=256)
+    new: str = Field(max_length=256)
 
 
 class LoginRedirect(Exception):
@@ -160,7 +180,12 @@ def create_app(
     if cfg.demo:
         apply_demo(db)
 
-    admin_password = _persistent_secret(db, "admin_password", cfg.admin_password, "Contraseña de admin")
+    users = Users(db)
+    if users.count() == 0:
+        # Primer arranque (o instalación anterior a los usuarios): el admin nace con la contraseña
+        # del entorno o una generada. Desde acá la base manda: se cambia en el panel o con magi-passwd.
+        seed = _persistent_secret(db, "admin_password", cfg.admin_password, "Contraseña de admin")
+        users.create(cfg.admin_user, seed, "admin", enforce=False)
     register_token = _persistent_secret(db, "register_token", cfg.register_token, "Token de registro")
 
     @asynccontextmanager
@@ -179,36 +204,41 @@ def create_app(
     app.state.cfg, app.state.notifier = cfg, notifier
 
     basic = HTTPBasic(auto_error=False)
-    # La sesión se firma con un secreto guardado en la base y con la contraseña actual:
-    # al cambiar la contraseña, todas las sesiones abiertas dejan de valer.
-    session_key = (_silent_secret(db, "session_secret") + hashlib.sha256(admin_password.encode()).hexdigest()).encode()
+    # La sesión se firma con un secreto de la base y con una huella del hash de contraseña del usuario:
+    # al cambiarle la contraseña, sus sesiones abiertas dejan de valer.
+    session_key = _silent_secret(db, "session_secret").encode()
     login_fails: dict[str, list[float]] = {}
 
-    def _sign(user: str, exp: float) -> str:
-        msg = f"{user}|{int(exp)}"
-        return msg + "|" + hmac.new(session_key, msg.encode(), hashlib.sha256).hexdigest()
+    def _sign(row: dict, exp: float) -> str:
+        msg = f"{row['username']}|{int(exp)}"
+        sig = hmac.new(session_key, f"{msg}|{fingerprint(row['pw_hash'])}".encode(), hashlib.sha256).hexdigest()
+        return msg + "|" + sig
 
-    def _session_user(token: str | None) -> str | None:
+    def _session_user(token: str | None) -> dict | None:
         if not token:
             return None
         try:
-            user, exp, sig = token.rsplit("|", 2)
-            good = hmac.new(session_key, f"{user}|{exp}".encode(), hashlib.sha256).hexdigest()
-            if hmac.compare_digest(sig, good) and float(exp) > time.time() and user == cfg.admin_user:
-                return user
+            name, exp, sig = token.rsplit("|", 2)
+            row = users.get(name)
+            if row is None or float(exp) <= time.time():
+                return None
+            good = hmac.new(session_key, f"{name}|{exp}|{fingerprint(row['pw_hash'])}".encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(sig, good) and name == row["username"]:
+                return row
         except ValueError:
             pass
         return None
 
-    def _check_password(username: str, password: str) -> bool:
-        user_ok = secrets.compare_digest(username.encode(), cfg.admin_user.encode())
-        pass_ok = secrets.compare_digest(password.encode(), admin_password.encode())
-        return user_ok and pass_ok
+    def _current(request: Request, creds: HTTPBasicCredentials | None) -> dict | None:
+        row = _session_user(request.cookies.get(SESSION_COOKIE))
+        if row is None and creds is not None:
+            row = users.authenticate(creds.username, creds.password)
+        return row
 
-    def _is_admin(request: Request, creds: HTTPBasicCredentials | None) -> bool:
-        if _session_user(request.cookies.get(SESSION_COOKIE)):
-            return True
-        return creds is not None and _check_password(creds.username, creds.password)
+    def _set_session(resp, request: Request, row: dict, life: int, persistent: bool) -> None:
+        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "") == "https"
+        resp.set_cookie(SESSION_COOKIE, _sign(row, time.time() + life), max_age=life if persistent else None,
+                        httponly=True, samesite="lax", secure=secure, path="/")
 
     def _unauthorized(request: Request) -> Exception:
         if request.url.path == "/":
@@ -220,12 +250,21 @@ def create_app(
         return HTTPException(status_code=401, detail="Credenciales requeridas", headers=headers)
 
     def admin(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)) -> None:
-        if not _is_admin(request, creds):
+        row = _current(request, creds)
+        if row is None:
             raise _unauthorized(request)
+        if row["role"] != "admin":
+            raise HTTPException(403, "Tu usuario es de solo lectura")
 
     def viewer(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)) -> None:
-        if not (cfg.public_view or _is_admin(request, creds)):
+        if not (cfg.public_view or _current(request, creds)):
             raise _unauthorized(request)
+
+    def logged_in(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)) -> dict:
+        row = _current(request, creds)
+        if row is None:
+            raise _unauthorized(request)
+        return row
 
     @app.exception_handler(LoginRedirect)
     async def _login_redirect(request: Request, exc: LoginRedirect):
@@ -258,17 +297,17 @@ def create_app(
         if len(recent) >= LOGIN_MAX_FAILS:
             wait = int(LOGIN_WINDOW_S - (now - recent[0])) + 1
             raise HTTPException(429, f"Demasiados intentos. Esperá {wait} s.", headers={"Retry-After": str(wait)})
-        if not _check_password(body.username, body.password):
+        row = users.authenticate(body.username, body.password)
+        if row is None:
             recent.append(now)
             login_fails[ip] = recent
             log.warning("Intento de acceso fallido desde %s", ip)
             raise HTTPException(401, "Usuario o contraseña incorrectos")
         login_fails.pop(ip, None)
+        users.touch_login(row["id"])
         life = REMEMBER_DAYS * 86400 if body.remember else SESSION_HOURS * 3600
-        resp = JSONResponse({"ok": True, "user": cfg.admin_user})
-        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "") == "https"
-        resp.set_cookie(SESSION_COOKIE, _sign(cfg.admin_user, now + life), max_age=life if body.remember else None,
-                        httponly=True, samesite="lax", secure=secure, path="/")
+        resp = JSONResponse({"ok": True, "user": row["username"], "role": row["role"]})
+        _set_session(resp, request, row, life, body.remember)
         return resp
 
     @app.post("/api/logout")
@@ -279,8 +318,67 @@ def create_app(
 
     @app.get("/api/me")
     def me(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)):
-        authed = _is_admin(request, creds)
-        return {"authed": authed, "user": cfg.admin_user if authed else None, "public_view": cfg.public_view}
+        row = _current(request, creds)
+        return {"authed": row is not None, "user": row["username"] if row else None,
+                "role": row["role"] if row else None, "public_view": cfg.public_view}
+
+    @app.post("/api/me/password")
+    def change_own_password(body: PasswordChange, request: Request, row: dict = Depends(logged_in)):
+        if not users.authenticate(row["username"], body.current):
+            raise HTTPException(400, "La contraseña actual no es correcta")
+        try:
+            users.set_password(row["id"], body.new)
+        except UserError as exc:
+            raise HTTPException(400, str(exc)) from None
+        resp = JSONResponse({"ok": True})
+        _set_session(resp, request, users.get_id(row["id"]), SESSION_HOURS * 3600, False)
+        return resp
+
+    # ------------------------------------------------------------------ usuarios
+
+    @app.get("/api/users", dependencies=[Depends(admin)])
+    def users_list():
+        return users.list()
+
+    @app.post("/api/users", dependencies=[Depends(admin)])
+    def users_create(body: UserIn):
+        try:
+            return {"id": users.create(body.username, body.password, body.role)}
+        except UserError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.put("/api/users/{uid}")
+    def users_edit(uid: int, body: UserEdit, request: Request, me_row: dict = Depends(logged_in)):
+        if me_row["role"] != "admin":
+            raise HTTPException(403, "Tu usuario es de solo lectura")
+        if not users.get_id(uid):
+            raise HTTPException(404, "Usuario no encontrado")
+        try:
+            if body.role is not None:
+                users.set_role(uid, body.role)
+            if body.password:
+                users.set_password(uid, body.password)
+        except UserError as exc:
+            raise HTTPException(400, str(exc)) from None
+        resp = JSONResponse({"ok": True})
+        if uid == me_row["id"]:
+            # Su propia sesión se renueva para que no lo saque del panel.
+            _set_session(resp, request, users.get_id(uid), SESSION_HOURS * 3600, False)
+        return resp
+
+    @app.delete("/api/users/{uid}")
+    def users_delete(uid: int, me_row: dict = Depends(logged_in)):
+        if me_row["role"] != "admin":
+            raise HTTPException(403, "Tu usuario es de solo lectura")
+        if uid == me_row["id"]:
+            raise HTTPException(400, "No podés eliminar tu propio usuario")
+        try:
+            users.delete(uid)
+        except KeyError:
+            raise HTTPException(404, "Usuario no encontrado") from None
+        except UserError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"deleted": uid}
 
     @app.get("/app.js", dependencies=[Depends(viewer)], include_in_schema=False)
     def app_js():
@@ -293,6 +391,10 @@ def create_app(
     @app.get("/remote.js", dependencies=[Depends(viewer)], include_in_schema=False)
     def remote_js():
         return _page("remote.js", "application/javascript")
+
+    @app.get("/users.js", dependencies=[Depends(viewer)], include_in_schema=False)
+    def users_js():
+        return _page("users.js", "application/javascript")
 
     @app.get("/style.css", dependencies=[Depends(viewer)], include_in_schema=False)
     def style_css():
@@ -604,7 +706,8 @@ def create_app(
     @app.post("/api/olts", dependencies=[Depends(admin)])
     def olts_create(body: OltIn):
         try:
-            return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons])}
+            return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons],
+                                                    cards=body.cards, ports_per_card=body.ports_per_card)}
         except ConfigError as exc:
             raise HTTPException(400, str(exc)) from None
 
@@ -632,7 +735,8 @@ def create_app(
     @app.put("/api/olts/{oid}", dependencies=[Depends(admin)])
     def olts_update(oid: int, body: OltIn):
         try:
-            return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons], oid)}
+            return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons], oid,
+                                                    cards=body.cards, ports_per_card=body.ports_per_card)}
         except ConfigError as exc:
             raise HTTPException(400, str(exc)) from None
         except KeyError:
