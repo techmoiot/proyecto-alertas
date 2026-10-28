@@ -145,6 +145,9 @@ def test_script_has_every_value_and_balanced_braces(mgr, db):
     body = re.sub(r"#.*", "", text)
     assert body.count("{") == body.count("}")
     assert text.index("/interface wireguard add") < text.index("/ip service set api")    # primero el túnel
+    # el puerto local no se fija en 13231 (puede estar usado por otro WireGuard del router) y la interfaz se habilita
+    assert "listen-port=13231" not in body and "listen-port=$lp" in body
+    assert "/interface wireguard enable [find name=$wg]" in body
 
 
 def test_script_needs_endpoint_and_server_key(db, env, tmp_path):

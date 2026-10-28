@@ -29,11 +29,15 @@
 :local wg "magi-wg"
 
 # 1) Túnel WireGuard hacia el servidor
+# Puerto local libre: si el router ya tiene otros WireGuard, no se puede repetir el 13231.
+:local lp 13240
+:while ([:len [/interface wireguard find where listen-port=$lp name!=$wg]] > 0) do={ :set lp ($lp + 1) }
 :if ([:len [/interface wireguard find name=$wg]] = 0) do={
-  /interface wireguard add name=$wg private-key=$myPriv listen-port=13231 comment="MAGI"
+  /interface wireguard add name=$wg private-key=$myPriv listen-port=$lp comment="MAGI"
 } else={
-  /interface wireguard set [find name=$wg] private-key=$myPriv
+  /interface wireguard set [find name=$wg] private-key=$myPriv listen-port=$lp
 }
+/interface wireguard enable [find name=$wg]
 /interface wireguard peers remove [find interface=$wg]
 /interface wireguard peers add interface=$wg public-key=$srvPub endpoint-address=$srvHost endpoint-port=$srvPort allowed-address=($srvIp . "/32") persistent-keepalive=25s comment="MAGI"
 /ip address remove [find interface=$wg]
