@@ -281,9 +281,13 @@ function routerHTML(r) {
   if (r.reachable === true) state = '<span class="dot ok"></span><span class="muted">en línea</span>';
   else if (r.reachable === false) state = '<span class="dot crit"></span><span class="router-err">sin respuesta</span>';
   const err = r.reachable === false && r.error ? `<div class="router-err">${esc(r.error)}</div>` : "";
-  const tiles = r.ifaces.length
-    ? r.ifaces.map((i) => tileHTML(r, i)).join("")
-    : '<div class="muted">Todavía no hay interfaces leídas de este router.</div>';
+  // En el Panel solo se muestran las interfaces elegidas para monitorear (Configuración → Interfaces de cada router).
+  const shown = r.ifaces.filter((i) => i.monitored);
+  const tiles = shown.length
+    ? shown.map((i) => tileHTML(r, i)).join("")
+    : r.ifaces.length
+      ? '<div class="muted">Ninguna interfaz de este router está seleccionada para monitorear. Elegilas en Configuración → Interfaces de cada router.</div>'
+      : '<div class="muted">Todavía no hay interfaces leídas de este router.</div>';
   let pp = "";
   const ps = r.pppoe_enabled && r.pppoe;
   if (ps && ps.online + ps.down > 0) {
