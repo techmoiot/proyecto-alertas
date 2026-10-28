@@ -62,6 +62,8 @@ else
   say "Se conserva la configuración existente ($ENV_FILE)"
 fi
 
+install -m 755 "$SRC/update.sh" /usr/local/bin/magi-update
+
 say "Preparando la conexión remota (WireGuard)"
 mkdir -p "$CONF_DIR/wg"
 chmod 755 "$CONF_DIR" "$CONF_DIR/wg"
@@ -114,6 +116,7 @@ if [ "$FIRST_INSTALL" -eq 1 ]; then
 else
   printf '  Usuario y contraseña: los de %s\n' "$ENV_FILE"
 fi
+printf '\nPara actualizar más adelante, desde cualquier carpeta:  magi-update\n'
 printf '\nSiguiente paso: entrá al panel -> Configuración -> "Conectar un MikroTik nuevo"\n'
 printf '(mismo sitio que el servidor) o "Router REMOTO" (por Internet, con túnel WireGuard).\n'
 if [ "$WG_OK" -eq 1 ]; then

@@ -34,7 +34,9 @@ sudo ./install.sh
 ```
 
 Al terminar muestra la URL del panel y la contraseña de `admin`. Para actualizar
-más adelante: `git pull && sudo ./install.sh` (conserva configuración y datos).
+más adelante, desde cualquier carpeta: **`magi-update`** (conserva configuración y datos).
+La primera vez, si todavía no existe ese comando:
+`curl -fsSL https://raw.githubusercontent.com/techmoiot/proyecto-alertas/main/update.sh | bash`.
 
 Queda como servicio de systemd (`mk-monitor`):
 
