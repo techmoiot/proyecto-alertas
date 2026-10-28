@@ -98,6 +98,15 @@ CREATE TABLE IF NOT EXISTS pppoe_events(
 CREATE INDEX IF NOT EXISTS idx_pppoe_events_ts ON pppoe_events(ts);
 CREATE INDEX IF NOT EXISTS idx_pppoe_events_user ON pppoe_events(router_id, user, ts);
 
+CREATE TABLE IF NOT EXISTS wg_peers(
+    router_id INTEGER PRIMARY KEY,
+    private_key TEXT NOT NULL,
+    public_key TEXT NOT NULL UNIQUE,
+    ip TEXT NOT NULL UNIQUE,
+    activated INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS olts(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE

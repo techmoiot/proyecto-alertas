@@ -1,5 +1,5 @@
 [Unit]
-Description=MK Monitor - alertas de interfaces MikroTik
+Description=MAGI - alertas de interfaces MikroTik
 After=network-online.target
 Wants=network-online.target
 

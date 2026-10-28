@@ -1,5 +1,7 @@
 """API web y servidor del panel."""
 
+import hashlib
+import hmac
 import ipaddress
 import logging
 import re
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,7 @@ from .poller import Poller, RouterClient
 from .pppoe import PPPoEMonitor, explain_reason
 from .syslog import SyslogReceiver
 from .topology import ConfigError, Topology, detect_pons
+from .wg import RemoteError, WGManager
 
 log = logging.getLogger("mkmonitor")
 
@@ -75,6 +78,31 @@ class OltIn(BaseModel):
     pons: list[PonIn] = Field(min_length=1, max_length=128)
 
 
+class LoginIn(BaseModel):
+    username: str = Field(max_length=128)
+    password: str = Field(max_length=256)
+    remember: bool = False
+
+
+class LoginRedirect(Exception):
+    """Se pidió una página sin sesión: el navegador debe ir a /login."""
+
+
+SESSION_COOKIE = "magi_session"
+SESSION_HOURS = 12
+REMEMBER_DAYS = 30
+LOGIN_MAX_FAILS = 6          # intentos fallidos por IP dentro de la ventana
+LOGIN_WINDOW_S = 300
+
+
+class RemoteRouterIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+class EndpointIn(BaseModel):
+    endpoint: str = Field(max_length=253)
+
+
 class DetectIn(BaseModel):
     vlan_from: int | None = Field(None, ge=1, le=4094)
     vlan_to: int | None = Field(None, ge=1, le=4094)
@@ -105,6 +133,16 @@ def _persistent_secret(db: DB, key: str, configured: str, label: str) -> str:
     return value
 
 
+def _silent_secret(db: DB, key: str) -> str:
+    """Secreto interno generado una vez y guardado en la base (no se imprime en el log)."""
+    row = db.one("SELECT value FROM settings WHERE key=?", (key,))
+    if row:
+        return row["value"]
+    value = secrets.token_urlsafe(32)
+    db.execute("INSERT INTO settings(key, value) VALUES(?, ?)", (key, value))
+    return value
+
+
 def create_app(
     cfg: Config | None = None, *, start_poller: bool = True, client_factory=None
 ) -> FastAPI:
@@ -115,9 +153,10 @@ def create_app(
     pppoe = PPPoEMonitor(db, engine)
     syslog = SyslogReceiver(cfg.syslog_port, pppoe.on_syslog)
     topology = Topology(db, engine, pppoe)
+    remote = WGManager(db, cfg)
     if client_factory is None:
         client_factory = DemoClient if cfg.demo else RouterClient
-    poller = Poller(db, engine, client_factory, pppoe, topology)
+    poller = Poller(db, engine, client_factory, pppoe, topology, remote)
     if cfg.demo:
         apply_demo(db)
 
@@ -133,34 +172,64 @@ def create_app(
         poller.stop()
         syslog.stop()
 
-    app = FastAPI(title="MK Monitor", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="MAGI", version=__version__, lifespan=lifespan)
     app.state.db, app.state.engine, app.state.poller = db, engine, poller
     app.state.pppoe, app.state.syslog, app.state.topology = pppoe, syslog, topology
+    app.state.remote = remote
     app.state.cfg, app.state.notifier = cfg, notifier
 
     basic = HTTPBasic(auto_error=False)
+    # La sesión se firma con un secreto guardado en la base y con la contraseña actual:
+    # al cambiar la contraseña, todas las sesiones abiertas dejan de valer.
+    session_key = (_silent_secret(db, "session_secret") + hashlib.sha256(admin_password.encode()).hexdigest()).encode()
+    login_fails: dict[str, list[float]] = {}
 
-    def _is_admin(creds: HTTPBasicCredentials | None) -> bool:
-        if creds is None:
-            return False
-        user_ok = secrets.compare_digest(creds.username.encode(), cfg.admin_user.encode())
-        pass_ok = secrets.compare_digest(creds.password.encode(), admin_password.encode())
+    def _sign(user: str, exp: float) -> str:
+        msg = f"{user}|{int(exp)}"
+        return msg + "|" + hmac.new(session_key, msg.encode(), hashlib.sha256).hexdigest()
+
+    def _session_user(token: str | None) -> str | None:
+        if not token:
+            return None
+        try:
+            user, exp, sig = token.rsplit("|", 2)
+            good = hmac.new(session_key, f"{user}|{exp}".encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(sig, good) and float(exp) > time.time() and user == cfg.admin_user:
+                return user
+        except ValueError:
+            pass
+        return None
+
+    def _check_password(username: str, password: str) -> bool:
+        user_ok = secrets.compare_digest(username.encode(), cfg.admin_user.encode())
+        pass_ok = secrets.compare_digest(password.encode(), admin_password.encode())
         return user_ok and pass_ok
 
-    def _unauthorized() -> HTTPException:
-        return HTTPException(
-            status_code=401,
-            detail="Credenciales requeridas",
-            headers={"WWW-Authenticate": 'Basic realm="MK Monitor"'},
-        )
+    def _is_admin(request: Request, creds: HTTPBasicCredentials | None) -> bool:
+        if _session_user(request.cookies.get(SESSION_COOKIE)):
+            return True
+        return creds is not None and _check_password(creds.username, creds.password)
 
-    def admin(creds: HTTPBasicCredentials | None = Depends(basic)) -> None:
-        if not _is_admin(creds):
-            raise _unauthorized()
+    def _unauthorized(request: Request) -> Exception:
+        if request.url.path == "/":
+            return LoginRedirect()
+        headers = {}
+        if request.headers.get("x-requested-with", "").lower() != "magi":
+            # Los clientes que no son el panel (scripts, curl) siguen pudiendo usar usuario/contraseña HTTP.
+            headers["WWW-Authenticate"] = 'Basic realm="MAGI"'
+        return HTTPException(status_code=401, detail="Credenciales requeridas", headers=headers)
 
-    def viewer(creds: HTTPBasicCredentials | None = Depends(basic)) -> None:
-        if not (cfg.public_view or _is_admin(creds)):
-            raise _unauthorized()
+    def admin(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)) -> None:
+        if not _is_admin(request, creds):
+            raise _unauthorized(request)
+
+    def viewer(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)) -> None:
+        if not (cfg.public_view or _is_admin(request, creds)):
+            raise _unauthorized(request)
+
+    @app.exception_handler(LoginRedirect)
+    async def _login_redirect(request: Request, exc: LoginRedirect):
+        return RedirectResponse("/login", status_code=302)
 
     def _sync() -> None:
         if start_poller:
@@ -175,6 +244,44 @@ def create_app(
     def index():
         return _page("index.html", "text/html")
 
+    @app.get("/login", include_in_schema=False)
+    def login_page(request: Request):
+        if _session_user(request.cookies.get(SESSION_COOKIE)):
+            return RedirectResponse("/", status_code=302)
+        return _page("login.html", "text/html")
+
+    @app.post("/api/login")
+    def login(body: LoginIn, request: Request):
+        ip = request.client.host if request.client else "?"
+        now = time.time()
+        recent = [t for t in login_fails.get(ip, []) if now - t < LOGIN_WINDOW_S]
+        if len(recent) >= LOGIN_MAX_FAILS:
+            wait = int(LOGIN_WINDOW_S - (now - recent[0])) + 1
+            raise HTTPException(429, f"Demasiados intentos. Esperá {wait} s.", headers={"Retry-After": str(wait)})
+        if not _check_password(body.username, body.password):
+            recent.append(now)
+            login_fails[ip] = recent
+            log.warning("Intento de acceso fallido desde %s", ip)
+            raise HTTPException(401, "Usuario o contraseña incorrectos")
+        login_fails.pop(ip, None)
+        life = REMEMBER_DAYS * 86400 if body.remember else SESSION_HOURS * 3600
+        resp = JSONResponse({"ok": True, "user": cfg.admin_user})
+        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "") == "https"
+        resp.set_cookie(SESSION_COOKIE, _sign(cfg.admin_user, now + life), max_age=life if body.remember else None,
+                        httponly=True, samesite="lax", secure=secure, path="/")
+        return resp
+
+    @app.post("/api/logout")
+    def logout():
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(SESSION_COOKIE, path="/")
+        return resp
+
+    @app.get("/api/me")
+    def me(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)):
+        authed = _is_admin(request, creds)
+        return {"authed": authed, "user": cfg.admin_user if authed else None, "public_view": cfg.public_view}
+
     @app.get("/app.js", dependencies=[Depends(viewer)], include_in_schema=False)
     def app_js():
         return _page("app.js", "application/javascript")
@@ -182,6 +289,10 @@ def create_app(
     @app.get("/network.js", dependencies=[Depends(viewer)], include_in_schema=False)
     def network_js():
         return _page("network.js", "application/javascript")
+
+    @app.get("/remote.js", dependencies=[Depends(viewer)], include_in_schema=False)
+    def remote_js():
+        return _page("remote.js", "application/javascript")
 
     @app.get("/style.css", dependencies=[Depends(viewer)], include_in_schema=False)
     def style_css():
@@ -342,6 +453,7 @@ def create_app(
             db.execute(f"DELETE FROM {table} WHERE router_id=?", (rid,))
         if start_poller:
             poller.sync()  # detiene el hilo del router
+        remote.remove_peer(rid)     # si era un router remoto, libera su túnel
         engine.forget_router(rid)   # resuelve sus alertas
         pppoe.forget_router(rid)    # y olvida sus sesiones PPPoE
         return {"deleted": rid}
@@ -570,6 +682,54 @@ def create_app(
             .replace("__SYSLOG_PORT__", str(cfg.syslog_port))
         )
         return PlainTextResponse(text)
+
+    # ------------------------------------------------- routers remotos (WireGuard)
+
+    @app.get("/api/remote/status", dependencies=[Depends(admin)])
+    def remote_status():
+        return remote.status()
+
+    @app.put("/api/remote/endpoint", dependencies=[Depends(admin)])
+    def remote_endpoint(body: EndpointIn):
+        try:
+            return {"endpoint": remote.set_endpoint(body.endpoint)}
+        except RemoteError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.post("/api/remote/routers", dependencies=[Depends(admin)])
+    def remote_create(body: RemoteRouterIn):
+        """Da de alta un router remoto: reparte su IP del túnel y genera todas las claves."""
+        name = body.name.strip()
+        if db.one("SELECT id FROM routers WHERE lower(name)=lower(?)", (name,)):
+            raise HTTPException(400, f"Ya existe un router llamado «{name}»")
+        if not remote.server_pub():
+            raise HTTPException(409, "El servidor todavía no tiene WireGuard instalado (corré ./install.sh de nuevo)")
+        if not remote.endpoint():
+            raise HTTPException(409, "Primero cargá la IP pública o el dominio del servidor")
+        try:
+            ip = remote._allocate_ip()
+        except RemoteError as exc:
+            raise HTTPException(409, str(exc)) from None
+        password = secrets.token_urlsafe(18)
+        # Queda pausado hasta que el túnel conecte por primera vez (así no genera alertas de «sin respuesta»).
+        cur = db.execute(
+            "INSERT INTO routers(name, host, port, username, password, use_ssl, enabled, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?)", (name, ip, 8728, "mkmonitor", password, 0, 0, time.time()))
+        rid = cur.lastrowid
+        remote.create_peer(rid)
+        log.info("Router remoto creado: %s (túnel %s)", name, ip)
+        return {"id": rid, "ip": ip}
+
+    @app.get("/api/remote/routers/{rid}/script", dependencies=[Depends(admin)])
+    def remote_script(rid: int):
+        router = db.one("SELECT * FROM routers WHERE id=?", (rid,))
+        peer = remote.peer(rid)
+        if not router or not peer:
+            raise HTTPException(404, "Ese router no es un router remoto")
+        try:
+            return PlainTextResponse(remote.render_script(router, peer, cfg.syslog_port))
+        except RemoteError as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/register")
     def register(

@@ -1,8 +1,9 @@
 :root {
-  --bg: #0e1218;
-  --panel: #161c25;
-  --panel-2: #1d2530;
-  --line: #2a3441;
+  --bg: #07090d;
+  --panel: #0f141b;
+  --panel-2: #161d27;
+  --line: #27313f;
+  --orange: #ff7a1a;
   --text: #e6ebf2;
   --muted: #8b97a8;
   --ok: #34c77b;
@@ -10,7 +11,7 @@
   --crit: #f0443a;
   --rx: #4aa3ff;
   --tx: #37d6b0;
-  --accent: #4aa3ff;
+  --accent: #ff7a1a;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -174,3 +175,27 @@ td.wrap { white-space: normal; min-width: 14rem; }
 @media (max-width: 700px) { .netwrap { height: calc(100vh - 300px); } .netpanel { top: auto; height: 55%; width: calc(100% - 1.2rem); } }
 .netbanner { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .6rem; }
 .netsector { background: #2a1514; color: #ff9c95; border: 1px solid #7d2520; font-weight: 600; font-size: .85rem; padding: .3rem .7rem; border-radius: 999px; animation: blink 1.4s ease-in-out infinite; }
+
+/* ---------------------------------------------------------------- tema MAGI */
+body { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'><path d='M28 2 54 17v30L28 62 2 47V17zM0 65l28 16 28-16M28 81v16' fill='none' stroke='%23ff7a1a' stroke-opacity='.045' stroke-width='1'/></svg>"); }
+.top { border-bottom: 1px solid #4a2a0e; box-shadow: 0 1px 0 rgba(255,122,26,.12); }
+.brand { gap: .55rem; }
+.brand-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 800; letter-spacing: .3em; color: var(--orange); text-shadow: 0 0 10px rgba(255,122,26,.45); }
+.logo { background: transparent; border: 2px solid var(--orange); border-radius: 0; width: 15px; height: 15px; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); background: var(--orange); }
+nav button { text-transform: uppercase; letter-spacing: .08em; font-size: .8rem; }
+nav button.active { background: rgba(255,122,26,.12); color: var(--orange); box-shadow: inset 0 -2px 0 var(--orange); border-radius: 6px 6px 0 0; }
+h2 { text-transform: uppercase; letter-spacing: .06em; font-size: 1rem; }
+.card { border-top: 2px solid #5b3210; }
+button { color: #130900; }
+button.danger { color: #fff; }
+button.ghost { color: var(--text); }
+th { color: #b98e68; }
+.clock { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.magi-units { display: inline-flex; gap: .3rem; }
+.mu { display: inline-flex; align-items: center; gap: .3rem; font: 700 .64rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; padding: .28rem .5rem; border: 1px solid #5b3210; color: #c9b8a6; background: rgba(255,122,26,.05); clip-path: polygon(6px 0, calc(100% - 6px) 0, 100% 50%, calc(100% - 6px) 100%, 6px 100%, 0 50%); }
+.mu i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.mu.warn { border-color: var(--warn); color: var(--warn); }
+.mu.warn i { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.mu.crit { border-color: var(--crit); color: #ff8a82; background: rgba(240,68,58,.12); animation: blink 1.2s ease-in-out infinite; }
+.mu.crit i { background: var(--crit); box-shadow: 0 0 8px var(--crit); }
+@media (max-width: 900px) { .magi-units { display: none; } }

@@ -72,16 +72,19 @@ def add_router(client, **over):
 def test_health_is_open_and_everything_else_requires_login(app):
     with TestClient(app) as c:
         assert c.get("/api/health").json()["ok"] is True
-        for path in ("/", "/api/state", "/api/alerts", "/api/routers", "/api/settings", "/app.js"):
+        r = c.get("/", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "/login"        # la página lleva al formulario
+        for path in ("/api/state", "/api/alerts", "/api/routers", "/api/settings", "/app.js"):
             r = c.get(path)
             assert r.status_code == 401, path
-            assert "Basic" in r.headers["www-authenticate"]
+            assert "Basic" in r.headers["www-authenticate"]                        # scripts/curl siguen con usuario y contraseña
         assert c.get("/api/state", auth=("admin", "mala")).status_code == 401
         assert c.get("/api/state", auth=AUTH).status_code == 200
 
 
 def test_static_pages_are_served(client):
-    for path, marker in (("/", "MK Monitor"), ("/app.js", "refresh"), ("/style.css", "--bg")):
+    for path, marker in (("/", "MAGI"), ("/app.js", "refresh"), ("/style.css", "--bg"), ("/network.js", "renderNetwork"),
+                        ("/remote.js", "renderRemote"), ("/login", "MELCHIOR")):
         r = client.get(path)
         assert r.status_code == 200 and marker in r.text, path
 

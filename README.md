@@ -1,4 +1,6 @@
-# MK Monitor
+# MAGI
+
+*Sistema de monitoreo de red (nombre inspirado en las tres computadoras MAGI de Evangelion).*
 
 Panel web de alertas para MikroTik (RouterOS 7). Lee las **interfaces físicas**
 (`ether1`, `sfp-sfpplus1`, etc.) de uno o varios routers por la API y avisa en
@@ -64,6 +66,35 @@ configuración por defecto se leen todos. Las interfaces PPPoE de clientes **no 
 leen** (el filtro se hace en el router, no se bajan las ~1500 en cada lectura).
 Si querés incluir otra por nombre (`bridge1`, `bonding1`), agregala en
 *Interfaces extra por nombre*.
+
+## Router REMOTO (el servidor no está junto al MikroTik)
+
+Si el router está en **otra red** (otro sitio, detrás de NAT/CGNAT), se conecta por un túnel
+**WireGuard**: el router llama al servidor (conexión saliente) y todo —API de RouterOS y log
+de PPPoE— viaja cifrado por ese túnel con IP privadas (`10.77.0.0/24`). La API del MikroTik
+**no se abre a Internet**.
+
+1. En el panel: **Configuración → Router REMOTO**. Cargá la **IP pública o dominio** del
+   servidor y guardá.
+2. En el router de tu sitio (donde está el servidor), reenviá el **UDP 51820** hacia el servidor.
+3. Escribí el nombre del router remoto y **Crear router remoto**. Se genera un script con
+   todo adentro (claves del túnel, usuario de solo lectura, firewall, log): no hace falta
+   token ni aviso.
+4. Pegalo en una terminal del MikroTik. En segundos el estado pasa a **CONECTADO** y el
+   router empieza a monitorearse solo (hasta entonces queda pausado, sin alertas falsas).
+
+El script se puede volver a ver desde la tabla «Estado de los túneles» (**Ver script**).
+Para quitarlo, eliminá el router: se libera su IP del túnel.
+
+> **Requisito en LXC / Proxmox:** el *host* debe tener el módulo WireGuard
+> (`modprobe wireguard`, y para que cargue siempre `echo wireguard >> /etc/modules`).
+> `install.sh` lo comprueba y te avisa si no se puede. Si tu CT es *unprivileged* y falla,
+> usá un CT *privileged* o corré WireGuard en el host. El servicio queda así: la app
+> (sin privilegios) escribe la lista de routers y un ayudante root de systemd
+> (`mk-monitor-wg`) valida cada entrada y arma la configuración de WireGuard.
+>
+> **Sin probar contra un RouterOS real** (el script y el túnel): si algo falla en el
+> router, pegame el mensaje que muestra la terminal.
 
 ## Cómo se alerta
 
@@ -177,14 +208,18 @@ y una OLT de 6 PON con sectores que se caen, todo repetido cada 6 minutos.
 
 Variables en `/etc/mk-monitor/mk-monitor.env` (ver `mk-monitor.env.example`):
 `MKMON_PORT`, `MKMON_ADMIN_USER`, `MKMON_ADMIN_PASSWORD`, `MKMON_REGISTER_TOKEN`,
-`MKMON_PUBLIC_VIEW`, `MKMON_SYSLOG_PORT`, `MKMON_TELEGRAM_*`. Los datos viven en `/var/lib/mk-monitor/`
+`MKMON_PUBLIC_VIEW`, `MKMON_SYSLOG_PORT`, `MKMON_WG_PORT`, `MKMON_WG_NETWORK`, `MKMON_TELEGRAM_*`. Los datos viven en `/var/lib/mk-monitor/`
 (SQLite) y se guarda 7 días de historial de tráfico (configurable).
 
 ## Seguridad
 
-- Usá el panel en una red de confianza (LAN / VLAN de gestión). Usa HTTP Basic sobre
-  HTTP: la contraseña viaja sin cifrar. Si lo exponés fuera, ponelo detrás de un
-  proxy con HTTPS.
+- El acceso es una **pantalla de login** con sesión por cookie (HttpOnly, firmada; 12 h, o
+  30 días con «mantener la sesión»). Cambiar la contraseña cierra todas las sesiones, y tras
+  6 intentos fallidos desde una IP se bloquea 5 minutos. Los scripts y `curl` pueden seguir
+  usando usuario y contraseña HTTP (Basic).
+- El panel va por **HTTP**: la contraseña y la cookie viajan sin cifrar. Usalo en una red de
+  confianza o ponelo detrás de un proxy con HTTPS (con HTTPS la cookie se marca `Secure`
+  sola si el proxy manda `X-Forwarded-Proto: https`).
 - El usuario de la API en el MikroTik es de **solo lectura** y está limitado a la IP del servidor.
 - Las contraseñas de los routers se guardan en la base (`/var/lib/mk-monitor`, solo
   accesible por el usuario de servicio). Por eso el usuario es de solo lectura.

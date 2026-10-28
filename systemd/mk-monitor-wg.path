@@ -1,0 +1,9 @@
+[Unit]
+Description=MAGI - cambió la lista de routers remotos
+
+[Path]
+PathChanged=/var/lib/mk-monitor/wg/apply.trigger
+Unit=mk-monitor-wg.service
+
+[Install]
+WantedBy=multi-user.target

@@ -45,9 +45,14 @@ function fmtDateTime(ts) {
 }
 
 async function api(path, opts = {}) {
-  const o = { headers: { "Content-Type": "application/json" }, ...opts };
+  const o = { headers: { "Content-Type": "application/json", "X-Requested-With": "MAGI" }, ...opts };
   if (o.body && typeof o.body !== "string") o.body = JSON.stringify(o.body);
   const res = await fetch(path, o);
+  if (res.status === 401 && path !== "/api/login") {
+    // La sesión venció (o nunca hubo): se vuelve a la pantalla de acceso.
+    window.location.href = "/login";
+    throw new Error("Sesión vencida");
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -122,8 +127,37 @@ async function refresh() {
   }
 }
 
+/* Las tres unidades de MAGI resumen la salud del sistema (como en el anime: cada una "vota"). */
+function magiUnitStates() {
+  const k = (kind) => S.alerts.filter((a) => a.kind === kind);
+  const iface = S.alerts.filter((a) => ["link_down", "threshold_rx", "threshold_tx", "anomaly_rx", "anomaly_tx", "router_down"].includes(a.kind));
+  const enabled = S.routers.filter((r) => r.enabled);
+  const m1 = enabled.some((r) => r.reachable === false) || iface.some((a) => a.severity === "critical") ? "crit" : iface.length ? "warn" : "ok";
+  const m2 = k("pppoe_mass").length ? "crit" : k("pppoe_down").length ? "warn" : "ok";
+  const m3 = k("pon_down").length ? "crit" : "ok";
+  return [m1, m2, m3];
+}
+
+function renderMagiUnits() {
+  const st = magiUnitStates();
+  st.forEach((v, i) => ($("#mu" + (i + 1)).className = "mu " + v));
+  const worst = st.includes("crit") ? "crit" : st.includes("warn") ? "warn" : "ok";
+  $("#magiUnits").dataset.state = worst;
+}
+
+async function loadMe() {
+  try {
+    const me = await api("/api/me");
+    const b = $("#logoutBtn");
+    b.hidden = false;
+    b.textContent = me.authed ? "Salir" : "Entrar";
+    b.dataset.authed = me.authed ? "1" : "";
+  } catch (_) { /* la pantalla de acceso se abre sola si hace falta */ }
+}
+
 function onState() {
   $("#demoBadge").hidden = !S.info.demo;
+  renderMagiUnits();
 
   const enabled = S.routers.filter((r) => r.enabled);
   const up = enabled.filter((r) => r.reachable === true).length;
@@ -135,7 +169,7 @@ function onState() {
   const chipA = $("#chipAlerts");
   chipA.textContent = S.alerts.length ? `${S.alerts.length} alerta${S.alerts.length > 1 ? "s" : ""}` : "Sin alertas";
   chipA.className = "chip " + (!S.alerts.length ? "ok" : unacked.some((a) => a.severity === "critical") ? "crit" : "warn");
-  document.title = (unacked.length ? `(${unacked.length}) ` : "") + "MK Monitor";
+  document.title = (unacked.length ? `(${unacked.length}) ` : "") + "MAGI";
 
   // Sonido: al aparecer alertas nuevas y cada 30 s mientras queden sin reconocer.
   const fresh = unacked.filter((a) => !seen.has(a.id));
@@ -594,6 +628,9 @@ async function renderConfig() {
           <span class="muted">Contiene el token de registro: no lo compartas fuera de tu equipo.</span></div>
         <pre class="script" id="scriptText">${esc(script)}</pre></div>
 
+      <div class="card"><h2>Router REMOTO (por Internet)</h2>
+        <div id="remoteBox"><p class="muted">Cargando…</p></div></div>
+
       <div class="card"><h2>OLT y PON (mapa de red)</h2>
         <p class="muted">Cargá cada OLT con sus PON: una VLAN por PON y dos pools (Internet y TV). Los clientes se ubican solos por la IP que les da el PPPoE.</p>
         <div id="oltBox"><p class="muted">Cargando…</p></div></div>
@@ -635,6 +672,7 @@ async function renderConfig() {
         <p>Log de PPPoE (syslog UDP): <b>${S && S.info.syslog_listening ? "escuchando en el puerto " + S.info.syslog_port : "apagado"}</b>.
         Se cambia con <code>MKMON_SYSLOG_PORT</code> (0 = apagado).</p></div>`;
 
+    if (typeof renderRemote === "function") renderRemote();
     if (typeof renderOltConfig === "function") renderOltConfig();
     if (cfgRouter != null) renderIfaces();
   } catch (e) {
@@ -744,6 +782,9 @@ document.addEventListener("click", async (ev) => {
       showTab(t.dataset.tab);
     } else if (t.dataset.tabgo) {
       showTab(t.dataset.tabgo);
+    } else if (t.id === "logoutBtn") {
+      if (t.dataset.authed) await api("/api/logout", { method: "POST" });
+      window.location.href = "/login";
     } else if (t.id === "soundBtn") {
       soundOn = !soundOn;
       localStorage.setItem("mk_sound", soundOn ? "1" : "0");
@@ -854,4 +895,5 @@ setInterval(() => { if (tab === "history") renderHistory(); }, 8000);
 setInterval(() => {
   if (tab === "pppoe") { renderPppoe(); renderPppoeSearch(); }
 }, 5000);
+loadMe();
 refresh();

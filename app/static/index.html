@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MK Monitor</title>
+  <title>MAGI</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header class="top">
-    <div class="brand"><span class="logo"></span>MK Monitor<span id="demoBadge" class="badge demo" hidden>DEMO</span></div>
+    <div class="brand"><span class="logo"></span><span class="brand-name">MAGI</span><span id="demoBadge" class="badge demo" hidden>DEMO</span></div>
     <nav id="tabs">
       <button data-tab="panel" class="active">Panel</button>
       <button data-tab="pppoe">PPPoE</button>
@@ -17,10 +17,16 @@
       <button data-tab="config">Configuración</button>
     </nav>
     <div class="status">
+      <span class="magi-units" id="magiUnits" title="Estado de las tres unidades de MAGI">
+        <span class="mu" id="mu1" title="MELCHIOR·1: routers e interfaces"><i></i>MELCHIOR·1</span>
+        <span class="mu" id="mu2" title="BALTHASAR·2: clientes PPPoE"><i></i>BALTHASAR·2</span>
+        <span class="mu" id="mu3" title="CASPER·3: red OLT / sectores"><i></i>CASPER·3</span>
+      </span>
       <span id="chipRouters" class="chip">…</span>
       <span id="chipAlerts" class="chip">…</span>
       <button id="soundBtn" class="ghost" title="Activar sonido de alertas">🔇 Sonido</button>
       <span id="clock" class="clock"></span>
+      <button id="logoutBtn" class="ghost" title="Cerrar sesión" hidden>Salir</button>
     </div>
   </header>
 
@@ -126,5 +132,6 @@
   <div id="toast" class="toast" hidden></div>
   <script src="/app.js"></script>
   <script src="/network.js"></script>
+  <script src="/remote.js"></script>
 </body>
 </html>

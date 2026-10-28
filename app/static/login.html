@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAGI · Acceso</title>
+  <style>
+    :root {
+      --bg: #05070a; --orange: #ff7a1a; --orange-dim: #a24a0c; --green: #43e08a; --red: #ff4338;
+      --text: #f0e6dc; --muted: #8a8f98; --line: #3a2410;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      display: flex; align-items: center; justify-content: center; padding: 1rem; overflow-x: hidden;
+    }
+    /* trama hexagonal + líneas de barrido + viñeta */
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .55;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'><path d='M28 2 54 17v30L28 62 2 47V17zM0 65l28 16 28-16M28 81v16' fill='none' stroke='%23ff7a1a' stroke-opacity='.13' stroke-width='1'/></svg>");
+    }
+    body::after {
+      content: ""; position: fixed; inset: 0; pointer-events: none;
+      background:
+        repeating-linear-gradient(0deg, rgba(0,0,0,.28) 0 1px, transparent 1px 3px),
+        radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,.75) 100%);
+    }
+    main { position: relative; z-index: 1; width: min(520px, 100%); }
+    .frame {
+      position: relative; border: 1px solid var(--orange-dim); background: rgba(10, 8, 6, .86);
+      padding: 1.6rem 1.5rem 1.4rem; box-shadow: 0 0 40px rgba(255, 122, 26, .12), inset 0 0 30px rgba(255, 122, 26, .05);
+    }
+    .frame::before, .frame::after {
+      content: ""; position: absolute; width: 16px; height: 16px; border: 2px solid var(--orange);
+    }
+    .frame::before { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+    .frame::after { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+    .tag { color: var(--orange); font-size: .72rem; letter-spacing: .28em; text-transform: uppercase; }
+    h1 {
+      margin: .15rem 0 .1rem; font-size: clamp(3rem, 15vw, 4.6rem); letter-spacing: .32em; padding-left: .32em;
+      font-weight: 800; color: var(--orange); text-shadow: 0 0 18px rgba(255, 122, 26, .55); line-height: 1.05;
+    }
+    .sub { color: var(--muted); font-size: .78rem; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 1.1rem; }
+    .units { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-bottom: 1.2rem; }
+    .unit {
+      border: 1px solid var(--orange-dim); padding: .4rem .3rem .45rem; text-align: center;
+      clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% calc(100% - 8px), calc(100% - 8px) 100%, 8px 100%, 0 calc(100% - 8px), 0 8px);
+      background: rgba(255, 122, 26, .05); transition: background .25s, border-color .25s;
+    }
+    .unit b { display: block; font-size: .68rem; letter-spacing: .14em; color: var(--text); }
+    .unit span { display: block; font-size: .7rem; letter-spacing: .18em; color: var(--orange); margin-top: .15rem; }
+    .unit.ok { border-color: var(--green); background: rgba(67, 224, 138, .09); }
+    .unit.ok span { color: var(--green); }
+    .unit.bad { border-color: var(--red); background: rgba(255, 67, 56, .1); }
+    .unit.bad span { color: var(--red); }
+    .unit.busy span { animation: blink .5s steps(2) infinite; }
+    @keyframes blink { 50% { opacity: .25; } }
+    label { display: block; font-size: .72rem; letter-spacing: .2em; color: var(--orange); text-transform: uppercase; margin: .8rem 0 .25rem; }
+    input[type=text], input[type=password] {
+      width: 100%; background: #0a0805; color: var(--text); border: 1px solid var(--orange-dim); border-radius: 0;
+      padding: .65rem .75rem; font: inherit; letter-spacing: .04em;
+    }
+    input:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 1px var(--orange), 0 0 14px rgba(255, 122, 26, .35); }
+    .remember { display: flex; align-items: center; gap: .55rem; margin: .9rem 0 1.1rem; font-size: .82rem; color: var(--muted); letter-spacing: 0; text-transform: none; }
+    .remember input { width: 1.05rem; height: 1.05rem; accent-color: var(--orange); }
+    button {
+      width: 100%; padding: .8rem; border: 1px solid var(--orange); background: rgba(255, 122, 26, .14); color: var(--orange);
+      font: inherit; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: var(--orange); color: #120800; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #msg { min-height: 1.5rem; margin-top: .85rem; font-size: .85rem; color: var(--red); text-align: center; letter-spacing: .04em; }
+    .foot { margin-top: .9rem; display: flex; justify-content: space-between; color: #5c4a3a; font-size: .66rem; letter-spacing: .16em; text-transform: uppercase; }
+    .shake { animation: shake .35s; }
+    @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+    @media (prefers-reduced-motion: reduce) { .unit.busy span, .shake { animation: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="frame" id="frame">
+      <div class="tag">Sistema de monitoreo de red</div>
+      <h1>MAGI</h1>
+      <div class="sub">Interfaces · PPPoE · OLT</div>
+
+      <div class="units" aria-hidden="true">
+        <div class="unit" id="u1"><b>MELCHIOR·1</b><span>STANDBY</span></div>
+        <div class="unit" id="u2"><b>BALTHASAR·2</b><span>STANDBY</span></div>
+        <div class="unit" id="u3"><b>CASPER·3</b><span>STANDBY</span></div>
+      </div>
+
+      <form id="form" autocomplete="on">
+        <label for="user">Usuario</label>
+        <input id="user" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+        <label for="pass">Contraseña</label>
+        <input id="pass" name="password" type="password" autocomplete="current-password" required>
+        <label class="remember"><input id="remember" type="checkbox"> Mantener la sesión abierta 30 días</label>
+        <button id="go" type="submit">Autenticar</button>
+        <div id="msg" role="alert" aria-live="polite"></div>
+      </form>
+      <div class="foot"><span>Acceso restringido</span><span>Nodo de monitoreo</span></div>
+    </div>
+  </main>
+
+  <script>
+    const units = ["u1", "u2", "u3"].map((id) => document.getElementById(id));
+    const msg = document.getElementById("msg");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function setUnits(cls, text) {
+      units.forEach((u) => {
+        u.className = "unit " + cls;
+        u.querySelector("span").textContent = text;
+      });
+    }
+
+    // Arranque: las tres unidades "despiertan" una tras otra.
+    (async () => {
+      for (const u of units) {
+        u.classList.add("busy");
+        u.querySelector("span").textContent = "INICIANDO";
+        await sleep(220);
+        u.classList.remove("busy");
+        u.querySelector("span").textContent = "LISTO";
+      }
+    })();
+
+    document.getElementById("form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const btn = document.getElementById("go");
+      btn.disabled = true;
+      msg.textContent = "";
+      setUnits("busy", "VERIFICANDO");
+      let res, data = {};
+      try {
+        res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("user").value,
+            password: document.getElementById("pass").value,
+            remember: document.getElementById("remember").checked,
+          }),
+        });
+        data = await res.json().catch(() => ({}));
+      } catch (e) {
+        setUnits("bad", "SIN ENLACE");
+        msg.textContent = "No se pudo conectar con el servidor.";
+        btn.disabled = false;
+        return;
+      }
+      if (res.ok) {
+        for (const u of units) {
+          u.className = "unit ok";
+          u.querySelector("span").textContent = "APROBADO";
+          await sleep(260);
+        }
+        window.location.href = "/";
+        return;
+      }
+      setUnits("bad", "DENEGADO");
+      msg.textContent = data.detail || "Acceso denegado.";
+      const frame = document.getElementById("frame");
+      frame.classList.remove("shake");
+      void frame.offsetWidth;
+      frame.classList.add("shake");
+      document.getElementById("pass").select();
+      btn.disabled = false;
+    });
+  </script>
+</body>
+</html>

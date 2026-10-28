@@ -1,0 +1,7 @@
+[Unit]
+Description=MAGI - aplica los peers de WireGuard (conexión remota de MikroTik)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/mk-monitor/scripts/wg-apply.py
