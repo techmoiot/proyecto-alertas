@@ -277,3 +277,12 @@ Al agregar o editar una OLT elegís **cuántas tarjetas** tiene y **cuántos pue
 (típico 8 o 16). «Generar» crea todos los PON (`PON 2/3` = tarjeta 2, puerto 3) y cada fila tiene su
 selector de tarjeta para corregir a mano; «Detectar» desde el MikroTik los reparte entre las tarjetas.
 En el mapa, los PON se agrupan por tarjeta con una banda que se pone roja/naranja si caen sus PON.
+
+## Registrados vs. conectados (PPPoE)
+
+Además de `/ppp/active` (los conectados), MAGI lee cada minuto `/ppp/secret` (los usuarios creados en el router).
+En la pestaña **PPPoE** cada router muestra «N en línea de M registrados» y la tarjeta **Registrados sin conexión**
+lista a los que no tienen sesión: su última desconexión (`last-logged-out` del router), el motivo
+(`last-disconnect-reason`, o el del log si llega por syslog), perfil y nota/comentario. Distingue entre *sin conexión*,
+*deshabilitado* (suspendido) y *nunca se conectó*. Esta lista no genera alertas. Si el router usa RADIUS no tiene
+Secrets y la lista queda vacía.

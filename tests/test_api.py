@@ -383,7 +383,7 @@ def test_router_pppoe_fields_roundtrip_and_defaults(client):
 
 def test_pppoe_endpoints_require_login_and_admin_for_syslog(app):
     with TestClient(app) as c:
-        for p in ("summary", "down", "search?q=ab", "events", "syslog"):
+        for p in ("summary", "down", "search?q=ab", "events", "syslog", "registered"):
             assert c.get(f"/api/pppoe/{p}").status_code == 401, p
 
 
@@ -521,3 +521,43 @@ def test_detect_vlans_endpoint_proposes_pons_without_saving(client):
     assert client.post(f"/api/routers/{rid}/detect-vlans", json={"vlan_from": 5000}).status_code == 422
     FakeClient.fail = True
     assert client.post(f"/api/routers/{rid}/detect-vlans", json={}).status_code == 502
+
+
+def test_registered_users_without_a_session_are_listed_with_reason(client, app):
+    rid = add_router(client)
+    router = {"id": rid, "name": "Core", "host": "10.0.0.1"}
+    pppoe = app.state.pppoe
+    t = time.time()
+    # 3 registrados + 1 deshabilitado; solo cli001 y cli002 están conectados
+    secrets = [{"name": "cli001", "service": "pppoe"}, {"name": "cli002", "service": "pppoe"},
+               {"name": "cli003", "service": "pppoe", "last-logged-out": "2026-10-27 18:42:10",
+                "last-disconnect-reason": "peer is not responding", "profile": "50M", "comment": "Juan"},
+               {"name": "cli004", "service": "pppoe"},
+               {"name": "mora", "service": "pppoe", "disabled": True, "comment": "sin pago"}]
+    pppoe.process_active(router, pppoe_rows(2), t)
+    pppoe.process_secrets(router, secrets, t)
+    s = client.get("/api/pppoe/summary").json()["routers"][0]
+    assert (s["registered"], s["online"], s["offline"], s["disabled"]) == (5, 2, 2, 1)
+    r = client.get("/api/pppoe/registered").json()
+    by = {x["name"]: x for x in r["rows"]}
+    assert set(by) == {"cli003", "cli004", "mora"} and r["total"] == 3 and r["rows"][0]["router"] == "Core"
+    assert by["cli003"]["reason_es"] and by["cli003"]["last_logged_out"].startswith("2026-10-27")
+    assert by["cli003"]["comment"] == "Juan" and not by["cli003"]["never"]
+    assert by["cli004"]["never"] is True and by["mora"]["kind"] == "disabled"
+    assert [x["name"] for x in client.get("/api/pppoe/registered?kind=disabled").json()["rows"]] == ["mora"]
+    assert [x["name"] for x in client.get("/api/pppoe/registered?q=jua").json()["rows"]] == ["cli003"]
+    assert client.get("/api/pppoe/registered?kind=zzz").status_code == 400
+    # cuando uno se conecta, sale de la lista
+    pppoe.process_active(router, pppoe_rows(3), t + 10)
+    assert "cli003" not in {x["name"] for x in client.get("/api/pppoe/registered").json()["rows"]}
+    # la reason del log (syslog) se usa si el secret no la trae
+    pppoe.on_syslog("10.0.0.1", "pppoe,ppp,info <pppoe-cli004>: terminating... - peer is not responding", t + 11)
+    row = {x["name"]: x for x in client.get("/api/pppoe/registered").json()["rows"]}["cli004"]
+    assert row["reason"] == "peer is not responding" and row["reason_es"]
+
+
+def test_secret_read_error_is_reported_not_fatal(client, app):
+    rid = add_router(client)
+    app.state.pppoe.process_secrets_error({"id": rid}, "no permission")
+    r = client.get("/api/pppoe/registered").json()
+    assert r["total"] == 0 and "no permission" in r["routers"][0]["error"]

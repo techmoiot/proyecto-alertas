@@ -140,6 +140,24 @@ class DemoClient:
             if i not in offline
         ]
 
+    def fetch_pppoe_secrets(self) -> list[dict]:
+        """Todos los clientes demo más unos registrados que no están conectados."""
+        rows = [{"name": self._client_name(i), "service": "pppoe", "profile": "plan-50M", "disabled": False}
+                for i in range(1, self.n_clients + 1)]
+        rows += [
+            {"name": "baja-juan", "service": "pppoe", "profile": "plan-30M", "disabled": False,
+             "last-logged-out": "2026-10-27 18:42:10", "last-disconnect-reason": "peer is not responding",
+             "comment": "Juan Pérez · sin luz"},
+            {"name": "baja-maria", "service": "pppoe", "profile": "plan-30M", "disabled": False,
+             "last-logged-out": "2026-10-25 09:03:44", "last-disconnect-reason": "terminated by peer",
+             "comment": "María López · apagó el equipo"},
+            {"name": "nuevo-pedro", "service": "pppoe", "profile": "plan-50M", "disabled": False,
+             "comment": "Pedro · instalación pendiente"},
+            {"name": "mora-ana", "service": "pppoe", "profile": "corte", "disabled": True,
+             "last-logged-out": "2026-10-01 00:00:05", "comment": "Ana · suspendida por falta de pago"},
+        ]
+        return rows
+
     def fetch_vlans(self):
         vlans = [{"name": f"vlan{101 + n}", "vlan-id": 101 + n, "interface": "sfp-sfpplus2", "disabled": False}
                  for n in range(DEMO_PONS)]

@@ -58,6 +58,16 @@
       </div>
 
       <div class="card">
+        <div class="toolbar"><h2>Registrados sin conexión <span id="pppoeRegCount" class="muted"></span></h2>
+          <label>Mostrar <select id="pppoeRegKind">
+            <option value="all">todos</option><option value="offline">sin conexión</option><option value="disabled">deshabilitados</option>
+          </select></label></div>
+        <p class="muted" style="margin-top:0">Usuarios creados en el MikroTik (PPP → Secrets) que ahora no tienen sesión: cuándo se desconectaron y por qué.
+          No generan alertas; sirven para saber qué pasó con la diferencia entre los registrados y los conectados.</p>
+        <div id="pppoeReg" class="tablewrap"></div>
+      </div>
+
+      <div class="card">
         <h2>Últimas desconexiones</h2>
         <div id="pppoeEvents" class="tablewrap"></div>
       </div>

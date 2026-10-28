@@ -14,6 +14,9 @@ log = logging.getLogger("mkmonitor.poller")
 
 FIELDS = ("name", "type", "running", "disabled", "rx-byte", "tx-byte", "comment")
 PPP_FIELDS = ("name", "service", "address", "caller-id", "uptime")
+SECRET_FIELDS = ("name", "service", "profile", "disabled", "comment",
+                 "last-logged-out", "last-caller-id", "last-disconnect-reason")
+SECRETS_EVERY_S = 60
 PRUNE_EVERY_S = 3600
 
 
@@ -87,6 +90,12 @@ class RouterClient:
         rows = list(self.api.path("ppp", "active").select(*keys))
         return [r for r in rows if str(r.get("service", "")).lower() == "pppoe"]
 
+    def fetch_pppoe_secrets(self) -> list[dict[str, Any]]:
+        """Usuarios PPPoE registrados (/ppp/secret): permiten saber cuáles NO están conectados."""
+        keys = [Key(k) for k in SECRET_FIELDS]
+        rows = list(self.api.path("ppp", "secret").select(*keys))
+        return [r for r in rows if str(r.get("service", "any")).lower() in ("pppoe", "any", "")]
+
     def close(self) -> None:
         if self.api is not None:
             try:
@@ -107,6 +116,7 @@ class Worker(threading.Thread):
         self.factory = factory
         self.pppoe = pppoe
         self._last_pppoe = 0.0
+        self._last_secrets = 0.0
         self._pppoe_on = False
         self._stop_evt = threading.Event()
 
@@ -135,6 +145,13 @@ class Worker(threading.Thread):
             self.pppoe.process_error(self.router, exc)
             return
         self.pppoe.process_active(self.router, rows, now)
+        fetch_secrets = getattr(client, "fetch_pppoe_secrets", None)
+        if fetch_secrets is not None and now - self._last_secrets >= SECRETS_EVERY_S:
+            self._last_secrets = now
+            try:
+                self.pppoe.process_secrets(self.router, fetch_secrets(), now)
+            except TrapError as exc:
+                self.pppoe.process_secrets_error(self.router, exc)
         drain = getattr(client, "drain_log", None)
         if drain is not None:  # modo demo: el "log" viene del cliente simulado
             for user, event, reason in drain():

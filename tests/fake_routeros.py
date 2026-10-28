@@ -115,6 +115,7 @@ class FakeRouterOS:
         self.reject_queries = reject_queries
         self.requests: list[list[str]] = []
         self.ppp_active: list[dict] = []     # sesiones de /ppp/active (se editan desde la prueba)
+        self.ppp_secrets: list[dict] = []    # /ppp/secret
         self.vlans: list[dict] = []          # /interface/vlan
         self.addresses: list[dict] = []      # /ip/address
         self.ppp_error: str | None = None    # si se pone, /ppp/active/print contesta con un error
@@ -169,6 +170,8 @@ class FakeRouterOS:
                     self._interface_print(conn, args)
                 elif cmd in ("/interface/vlan/print", "/ip/address/print"):
                     self._plain_print(conn, args, self.vlans if "vlan" in cmd else self.addresses)
+                elif cmd == "/ppp/secret/print":
+                    self._plain_print(conn, args, self.ppp_secrets)
                 elif cmd == "/ppp/active/print":
                     self._ppp_active_print(conn, args)
                 else:

@@ -428,7 +428,8 @@ function pppoeSummaryHTML(sum) {
       }
       const cls = r.mass ? "pcard mass" : r.down ? "pcard warn" : "pcard";
       return `<div class="pcard ${cls.replace("pcard", "")}"><h3>${esc(r.name)}${r.mass ? ' <span class="pill crit">CAÍDA MASIVA</span>' : ""}</h3>
-        <div class="big">${r.online}</div><div class="sub">clientes en línea</div>
+        <div class="big">${r.online}</div><div class="sub">clientes en línea${r.registered != null ? ` de ${r.registered} registrados` : ""}</div>
+        ${r.registered != null ? `<div class="sub">${r.offline} sin conexión${r.disabled ? " · " + r.disabled + " deshabilitados" : ""}</div>` : ""}
         <div class="sub" style="margin-top:.3rem"><span class="${r.down ? "down-n" : ""}">${r.down} desconectados</span>
         · lectura ${ago(r.last_poll, sum.now)}</div>${r.error ? `<div class="router-err">${esc(r.error)}</div>` : ""}</div>`;
     })
@@ -507,9 +508,46 @@ async function renderPppoe() {
     $("#pppoeDownCount").textContent = down.total ? `(${down.total})` : "";
     $("#pppoeDown").innerHTML = downTableHTML(down);
     $("#pppoeEvents").innerHTML = eventsTableHTML(ev);
+    renderPppoeReg();
     if ($("#pppoeLogBox").open) renderPppoeLog();
   } catch (e) {
     $("#pppoeSummary").innerHTML = `<div class="card router-err">${esc(e.message)}</div>`;
+  }
+}
+
+function registeredTableHTML(res) {
+  if (!res.rows.length) {
+    const err = res.routers.map((r) => r.error).filter(Boolean)[0];
+    if (err) return `<p class="router-err">${esc(err)}</p>`;
+    return res.routers.length
+      ? '<p class="muted">Todos los usuarios registrados están conectados.</p>'
+      : '<p class="muted">Todavía no se leyeron los usuarios registrados (se leen cada minuto). Si tu router usa RADIUS, no tiene Secrets y esta lista queda vacía.</p>';
+  }
+  const kindPill = (r) =>
+    r.kind === "disabled" ? '<span class="pill warn">deshabilitado</span>'
+    : r.never ? '<span class="pill">nunca se conectó</span>'
+    : '<span class="pill crit">sin conexión</span>';
+  const now = res.now;
+  const rows = res.rows
+    .map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${esc(r.router)}</td><td>${kindPill(r)}</td>
+      <td>${esc(r.last_logged_out) || '<span class="muted">—</span>'}${r.down_since ? `<div class="muted">visto caer ${ago(r.down_since, now)}</div>` : ""}</td>
+      <td>${reasonHTML(r)}</td><td>${esc(r.profile)}</td><td>${esc(r.comment)}</td></tr>`)
+    .join("");
+  const more = res.total > res.rows.length ? `<p class="muted">Mostrando ${res.rows.length} de ${res.total}. Usá el buscador para filtrar.</p>` : "";
+  return `<table><thead><tr><th>Usuario</th><th>Router</th><th>Estado</th><th>Última desconexión</th><th>Motivo</th><th>Perfil</th><th>Nota</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
+}
+
+async function renderPppoeReg() {
+  const box = $("#pppoeReg");
+  if (!box) return;
+  const rid = $("#pppoeRouter").value;
+  const kind = $("#pppoeRegKind").value;
+  try {
+    const res = await api(`/api/pppoe/registered?kind=${kind}${rid ? "&router_id=" + rid : ""}`);
+    $("#pppoeRegCount").textContent = res.total ? `(${res.total})` : "";
+    box.innerHTML = registeredTableHTML(res);
+  } catch (e) {
+    box.innerHTML = `<p class="router-err">${esc(e.message)}</p>`;
   }
 }
 
@@ -884,6 +922,7 @@ document.addEventListener("change", (ev) => {
   if (ev.target.id === "ifRouter") { cfgRouter = parseInt(ev.target.value, 10); renderIfaces(); }
   if (ev.target.id === "histFilter") renderHistory();
   if (ev.target.id === "pppoeRouter") renderPppoe();
+  if (ev.target.id === "pppoeRegKind") renderPppoeReg();
 });
 
 let searchTimer = null;

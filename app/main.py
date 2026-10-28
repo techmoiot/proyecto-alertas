@@ -646,6 +646,7 @@ def create_app(
     @app.get("/api/pppoe/summary", dependencies=[Depends(viewer)])
     def pppoe_summary():
         stats = pppoe.summary()
+        reg = pppoe.registered(limit=0)["routers"]
         routers = []
         for r in db.query("SELECT id, name, enabled, pppoe_enabled FROM routers ORDER BY name"):
             st = stats.get(r["id"]) or {}
@@ -655,6 +656,9 @@ def create_app(
                 "online": st.get("online"), "down": st.get("down"),
                 "suppressed": st.get("suppressed"), "mass": st.get("mass", False),
                 "last_poll": st.get("last_poll"), "error": st.get("error"),
+                "registered": reg.get(r["id"], {}).get("registered"),
+                "offline": reg.get(r["id"], {}).get("offline"),
+                "disabled": reg.get(r["id"], {}).get("disabled"),
             })
         snap = syslog.snapshot()
         return {"now": time.time(), "routers": routers,
@@ -667,6 +671,19 @@ def create_app(
         for r in rows:
             r["router"] = names.get(r["router_id"], "?")
         return {"now": time.time(), "total": len(rows), "sessions": rows}
+
+    @app.get("/api/pppoe/registered", dependencies=[Depends(viewer)])
+    def pppoe_registered(router_id: int | None = None, q: str = "", kind: str = "all", limit: int = 1000):
+        """Usuarios registrados en el MikroTik (/ppp/secret) que no están conectados ahora."""
+        if kind not in ("all", "offline", "disabled"):
+            raise HTTPException(400, "kind debe ser all, offline o disabled")
+        res = pppoe.registered(router_id, q, kind, max(1, min(limit, 3000)))
+        names = {r["id"]: r["name"] for r in db.query("SELECT id, name FROM routers")}
+        for r in res["rows"]:
+            r["router"] = names.get(r["router_id"], "?")
+        res["routers"] = [{"router_id": k, "router": names.get(k, "?"), **v} for k, v in res["routers"].items()]
+        res["now"] = time.time()
+        return res
 
     @app.get("/api/pppoe/search", dependencies=[Depends(viewer)])
     def pppoe_search(q: str = ""):

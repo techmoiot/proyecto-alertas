@@ -83,6 +83,7 @@ class PPPoEMonitor:
         self.sessions: dict[int, dict[str, Session]] = {}
         self.stats: dict[int, dict] = {}
         self.reasons: dict[int, dict[str, tuple[float, str]]] = {}
+        self.secrets: dict[int, dict] = {}        # rid -> {"ts", "rows": {nombre: fila}, "error"}
         self.recent_down: dict[int, deque] = {}
         self.mass: dict[int, dict] = {}
         self._last_checkpoint: dict[int, float] = {}
@@ -266,6 +267,68 @@ class PPPoEMonitor:
                 del reasons[user]
         return {"online": online, "down": down, "suppressed": suppressed}
 
+    # ------------------------------------------------- usuarios registrados (secrets)
+
+    def process_secrets(self, router: dict, rows: list[dict], now: float | None = None) -> None:
+        now = self.clock() if now is None else now
+        data = {str(r.get("name", "")): r for r in rows if r.get("name")}
+        with self._lock:
+            self.secrets[router["id"]] = {"ts": now, "rows": data, "error": ""}
+
+    def process_secrets_error(self, router: dict, error) -> None:
+        with self._lock:
+            old = self.secrets.get(router["id"], {"ts": 0, "rows": {}})
+            self.secrets[router["id"]] = {**old, "error": f"No se pudo leer /ppp/secret: {error}"}
+
+    def _registered_rows(self, rid: int) -> list[dict]:
+        """Usuarios registrados que NO tienen sesión activa ahora."""
+        snap = self.secrets.get(rid)
+        if not snap:
+            return []
+        sess = self.sessions.get(rid, {})
+        out = []
+        for name, r in snap["rows"].items():
+            se = sess.get(name)
+            if se is not None and se.state == "up":
+                continue
+            disabled = str(r.get("disabled", "")).lower() in ("true", "yes", "1")
+            last_out = str(r.get("last-logged-out") or "")
+            reason = str(r.get("last-disconnect-reason") or "") or (se.reason if se else "") \
+                or self.reasons.get(rid, {}).get(name, (0, ""))[1]
+            out.append({
+                "router_id": rid, "name": name,
+                "kind": "disabled" if disabled else "offline",
+                "never": not last_out and se is None,
+                "last_logged_out": last_out, "profile": str(r.get("profile") or ""),
+                "comment": str(r.get("comment") or ""),
+                "caller_id": str(r.get("last-caller-id") or (se.caller_id if se else "")),
+                "reason": reason, "reason_es": explain_reason(reason) if reason else "",
+                "down_since": se.since if se is not None else None,
+                "status": self._status(se) if se is not None else "",
+            })
+        return out
+
+    def registered(self, router_id: int | None = None, q: str = "", kind: str = "all",
+                   limit: int = 500) -> dict:
+        """Lista de registrados sin conexión (con motivo) y los totales por router."""
+        q = q.strip().lower()
+        rows, totals = [], {}
+        with self._lock:
+            for rid, snap in self.secrets.items():
+                if router_id is not None and rid != router_id:
+                    continue
+                mine = self._registered_rows(rid)
+                totals[rid] = {
+                    "registered": len(snap["rows"]), "offline": sum(1 for r in mine if r["kind"] == "offline"),
+                    "disabled": sum(1 for r in mine if r["kind"] == "disabled"),
+                    "ts": snap["ts"], "error": snap.get("error", ""),
+                }
+                rows += [r for r in mine if (kind == "all" or r["kind"] == kind)
+                         and (not q or q in r["name"].lower() or q in r["comment"].lower())]
+        # Primero los que acaban de caer; después por nombre.
+        rows.sort(key=lambda r: (r["down_since"] is None, -(r["down_since"] or 0), r["name"].lower()))
+        return {"total": len(rows), "rows": rows[:limit], "routers": totals}
+
     def _reason_for(self, rid: int, name: str, now: float) -> str:
         item = self.reasons.get(rid, {}).get(name)
         return item[1] if item and now - item[0] <= REASON_MAX_AGE_S else ""
@@ -345,7 +408,7 @@ class PPPoEMonitor:
             for table in ("pppoe_sessions", "pppoe_events"):
                 self.db.execute(f"DELETE FROM {table} WHERE router_id=?", (rid,))
             for store in (self.sessions, self.stats, self.reasons, self.recent_down,
-                          self.mass, self._last_checkpoint):
+                          self.mass, self._last_checkpoint, self.secrets):
                 store.pop(rid, None)
 
     def prune(self, now: float | None = None) -> None:

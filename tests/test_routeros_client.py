@@ -206,6 +206,21 @@ def test_fetch_pppoe_active_reads_only_pppoe_sessions(server):
     assert rows[0]["caller-id"].startswith("AA:BB") and rows[0]["address"].startswith("10.20.")
 
 
+def test_fetch_pppoe_secrets_keeps_pppoe_and_any_service(server):
+    server.ppp_secrets = [
+        {"name": "ana", "service": "pppoe", "disabled": False, "last-logged-out": "2026-10-27 18:42:10"},
+        {"name": "beto", "service": "any", "disabled": True},
+        {"name": "vpn", "service": "l2tp"},
+    ]
+    c = RouterClient(router_for(server))
+    c.connect()
+    rows = c.fetch_pppoe_secrets()
+    c.close()
+    assert sorted(r["name"] for r in rows) == ["ana", "beto"]
+    assert next(r for r in rows if r["name"] == "ana")["last-logged-out"].startswith("2026")
+    assert next(r for r in rows if r["name"] == "beto")["disabled"] is True
+
+
 def test_poller_detects_pppoe_disconnect_over_the_wire_and_reconnect():
     from app.pppoe import PPPoEMonitor
 
