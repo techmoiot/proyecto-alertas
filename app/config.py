@@ -26,7 +26,7 @@ class Config:
     syslog_port: int
     # Conexión remota por WireGuard (ver app/wg.py)
     wg_network: str = "10.77.0.0/24"
-    wg_port: int = 51820
+    wg_port: int = 51821
     wg_endpoint: str = ""                                  # IP pública o dominio del servidor
     wg_state_dir: str = "/var/lib/mk-monitor/wg"           # donde la app deja la lista de peers
     wg_run_dir: str = "/run/mk-monitor-wg"                 # donde el ayudante root publica el estado
@@ -50,7 +50,7 @@ def load() -> Config:
         # 0 = no escuchar syslog. En modo demo no se abre ningún puerto salvo que se pida.
         syslog_port=int(os.environ.get("MKMON_SYSLOG_PORT", "0" if demo else "5140")),
         wg_network=os.environ.get("MKMON_WG_NETWORK", "10.77.0.0/24"),
-        wg_port=int(os.environ.get("MKMON_WG_PORT", "51820")),
+        wg_port=int(os.environ.get("MKMON_WG_PORT", "51821")),
         wg_endpoint=os.environ.get("MKMON_WG_ENDPOINT", ""),
         wg_state_dir=os.environ.get("MKMON_WG_STATE_DIR", tempfile.mkdtemp(prefix="magi-wg-") if demo else "/var/lib/mk-monitor/wg"),
         wg_run_dir=os.environ.get("MKMON_WG_RUN_DIR", "/run/mk-monitor-wg"),

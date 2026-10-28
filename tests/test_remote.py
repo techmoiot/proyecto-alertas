@@ -140,7 +140,7 @@ def test_script_has_every_value_and_balanced_braces(mgr, db):
     text = mgr.render_script(router, peer, 5140)
     assert "__" not in re.sub(r"#.*", "", text)                      # no quedaron marcadores sin reemplazar
     for needle in (mgr.server_pub(), "vpn.ejemplo.com", peer["private_key"], "10.77.0.2/24", "pw",
-                   ":local srvIp \"10.77.0.1\"", ":local syslogPort 5140", ":local srvPort 51820"):
+                   ":local srvIp \"10.77.0.1\"", ":local syslogPort 5140", ":local srvPort 51821"):
         assert needle in text, needle
     body = re.sub(r"#.*", "", text)
     assert body.count("{") == body.count("}")

@@ -77,7 +77,7 @@ def parse_peers(text: str, net: ipaddress.IPv4Network, server_ip: ipaddress.IPv4
 def main() -> int:
     env = read_env()
     net = ipaddress.ip_network(env.get("MKMON_WG_NETWORK", "10.77.0.0/24"))
-    port = int(env.get("MKMON_WG_PORT", "51820"))
+    port = int(env.get("MKMON_WG_PORT", "51821"))
     server_ip = next(net.hosts())
     key_file = WG_DIR / "server.key"
     if not key_file.exists():

@@ -76,7 +76,18 @@ fi
 wg pubkey < "$CONF_DIR/wg/server.key" > "$CONF_DIR/wg/server.pub"
 chmod 600 "$CONF_DIR/wg/server.key"
 chmod 644 "$CONF_DIR/wg/server.pub"
-grep -q '^MKMON_WG_PORT=' "$ENV_FILE" || printf '\n# Conexión remota (WireGuard)\nMKMON_WG_NETWORK=10.77.0.0/24\nMKMON_WG_PORT=51820\n' >> "$ENV_FILE"
+# Puerto UDP del túnel: se evita el 51820 (el habitual de WireGuard) y cualquiera que ya esté en uso,
+# para no pisar otro WireGuard del mismo equipo. Solo se elige la primera vez; luego manda el .env.
+pick_wg_port() {
+  local p
+  for p in 51821 51822 51823 51824 51825 51826; do
+    if ! ss -uln 2>/dev/null | grep -qE "[:.]${p}[[:space:]]" && ! wg show all listen-port 2>/dev/null | grep -qw "$p"; then
+      echo "$p"; return
+    fi
+  done
+  echo 51821
+}
+grep -q '^MKMON_WG_PORT=' "$ENV_FILE" || printf '\n# Conexión remota (WireGuard)\nMKMON_WG_NETWORK=10.77.0.0/24\nMKMON_WG_PORT=%s\n' "$(pick_wg_port)" >> "$ENV_FILE"
 
 say "Instalando los servicios de systemd"
 cp "$SRC/systemd/mk-monitor.service" /etc/systemd/system/mk-monitor.service
@@ -122,7 +133,7 @@ printf '\nPara actualizar más adelante, desde cualquier carpeta:  magi-update\n
 printf '\nSiguiente paso: entrá al panel -> Configuración -> "Conectar un MikroTik nuevo"\n'
 printf '(mismo sitio que el servidor) o "Router REMOTO" (por Internet, con túnel WireGuard).\n'
 if [ "$WG_OK" -eq 1 ]; then
-  printf '  Router remoto: abrí UDP %s hacia este servidor (reenvío de puerto en tu router).\n\n' "$(grep -E '^MKMON_WG_PORT=' "$ENV_FILE" | cut -d= -f2 | grep . || echo 51820)"
+  printf '  Router remoto: abrí UDP %s hacia este servidor (reenvío de puerto en tu router).\n\n' "$(grep -E '^MKMON_WG_PORT=' "$ENV_FILE" | cut -d= -f2 | grep . || echo 51821)"
 else
   printf '\n\033[1;33mAviso:\033[0m este equipo no puede crear interfaces WireGuard (en un LXC suele faltar el módulo en el host).\n'
   printf 'La conexión de routers REMOTOS no va a funcionar hasta habilitarlo; ver README, sección "Router remoto".\n\n'

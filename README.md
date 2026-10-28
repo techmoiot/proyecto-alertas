@@ -78,7 +78,7 @@ de PPPoE— viaja cifrado por ese túnel con IP privadas (`10.77.0.0/24`). La AP
 
 1. En el panel: **Configuración → Router REMOTO**. Cargá la **IP pública o dominio** del
    servidor y guardá.
-2. En el router de tu sitio (donde está el servidor), reenviá el **UDP 51820** hacia el servidor.
+2. En el router de tu sitio (donde está el servidor), reenviá el **UDP 51821** (o el que muestre el panel; el instalador evita el 51820 si ya lo usa otro WireGuard) hacia el servidor.
 3. Escribí el nombre del router remoto y **Crear router remoto**. Se genera un script con
    todo adentro (claves del túnel, usuario de solo lectura, firewall, log): no hace falta
    token ni aviso.
