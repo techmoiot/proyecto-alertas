@@ -851,12 +851,12 @@ function oltRenderForm() {
       </div>
       <div class="row" style="margin-top:.6rem"><button id="oltDetect">Detectar VLAN y redes</button></div>
       <div id="oltDetectInfo" class="muted" style="margin-top:.5rem">${esc(OLT_INFO)}</div></div>` : ""}
-    <div class="row" style="margin:.6rem 0"><button class="ghost" id="oltGen">Generar los PON a mano</button>
-      <button class="ghost" id="oltAddRow">Agregar un PON</button>
+    <div class="row" style="margin:.6rem 0"><button class="ghost" id="oltAddRow">Agregar un PON</button>
       <span class="muted">Después podés corregir cualquier fila a mano.</span></div>
     <div class="tablewrap"><table><thead><tr><th>PON</th><th>Tarjeta</th><th>VLAN</th><th>Pool Internet</th><th>Pool TV</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="muted">Generá los PON o agregá uno.</td></tr>'}</tbody></table></div>
-    <div class="row" style="margin-top:.8rem"><button id="oltSave">Guardar OLT</button>
+    <div class="row" style="margin-top:.8rem"><button class="ghost" id="oltGen">Generar los PON a mano</button>
+      <button id="oltSave">Guardar OLT</button>
       <button class="ghost" id="oltCancel">Cancelar</button></div>`;
 }
 
@@ -936,6 +936,7 @@ document.addEventListener("click", async (ev) => {
       const cards = parseInt($("#olt_cards").value, 10) || 0, per = parseInt($("#olt_ppc").value, 10) || 0;
       if (cards < 1 || per < 1) throw new Error("Poné al menos 1 tarjeta y 1 puerto por tarjeta");
       if (cards * per > 128) throw new Error("Máximo 128 PON por OLT (tarjetas × puertos)");
+      if (OLT_EDIT.pons.length && !confirm(`Esto reemplaza los ${OLT_EDIT.pons.length} PON de la tabla por ${cards * per} nuevos. ¿Continuar?`)) return;
       const v0 = parseInt($("#olt_vlan0").value, 10) || 1;
       OLT_EDIT.name = $("#olt_name").value;
       OLT_EDIT.cards = cards; OLT_EDIT.ppc = per;
