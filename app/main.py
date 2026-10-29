@@ -17,6 +17,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .backup import BackupError, BackupManager
 from .config import Config, load
 from .db import DB, DEFAULT_SETTINGS
 from .demo import DemoClient, apply_demo
@@ -30,13 +31,15 @@ from .users import UserError, Users, fingerprint
 from .wg import RemoteError, WGManager
 
 log = logging.getLogger("mkmonitor")
+min_ = min          # (algunos parámetros de la API se llaman `min`)
 
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 SCRIPT_TEMPLATE = BASE.parent / "routeros" / "conectar-mikrotik.rsc"
 
 ROUTER_PUBLIC_FIELDS = (
-    "id, name, host, port, username, use_ssl, types, include, enabled, pppoe_enabled, syslog_ip"
+    "id, name, host, port, username, use_ssl, types, include, enabled, pppoe_enabled, syslog_ip, "
+    "cfg_backup, ssh_port"
 )
 
 
@@ -51,7 +54,14 @@ class RouterIn(BaseModel):
     include: str = Field("", max_length=300)
     enabled: bool = True
     pppoe_enabled: bool = True
+    cfg_backup: bool = False
+    ssh_port: int = Field(22, ge=1, le=65535)
     syslog_ip: str = Field("", max_length=45)
+
+
+class BackupRouterIn(BaseModel):
+    cfg_backup: bool
+    ssh_port: int = Field(22, ge=1, le=65535)
 
 
 class RouterTest(RouterIn):
@@ -174,9 +184,11 @@ def create_app(
     syslog = SyslogReceiver(cfg.syslog_port, pppoe.on_syslog)
     topology = Topology(db, engine, pppoe)
     remote = WGManager(db, cfg)
+    backup_dir = cfg.backup_dir or (str(Path(cfg.db_path).parent / "backups") if cfg.db_path != ":memory:" else "")
+    backup = BackupManager(db, backup_dir or None)
     if client_factory is None:
         client_factory = DemoClient if cfg.demo else RouterClient
-    poller = Poller(db, engine, client_factory, pppoe, topology, remote)
+    poller = Poller(db, engine, client_factory, pppoe, topology, remote, backup)
     if cfg.demo:
         apply_demo(db)
 
@@ -201,6 +213,7 @@ def create_app(
     app.state.db, app.state.engine, app.state.poller = db, engine, poller
     app.state.pppoe, app.state.syslog, app.state.topology = pppoe, syslog, topology
     app.state.remote = remote
+    app.state.backup = backup
     app.state.cfg, app.state.notifier = cfg, notifier
 
     basic = HTTPBasic(auto_error=False)
@@ -396,6 +409,10 @@ def create_app(
     def users_js():
         return _page("users.js", "application/javascript")
 
+    @app.get("/backups.js", dependencies=[Depends(viewer)], include_in_schema=False)
+    def backups_js():
+        return _page("backups.js", "application/javascript")
+
     @app.get("/style.css", dependencies=[Depends(viewer)], include_in_schema=False)
     def style_css():
         return _page("style.css", "text/css")
@@ -508,6 +525,8 @@ def create_app(
             "enabled": int(body.enabled),
             "pppoe_enabled": int(body.pppoe_enabled),
             "syslog_ip": body.syslog_ip.strip(),
+            "cfg_backup": int(body.cfg_backup),
+            "ssh_port": body.ssh_port,
         }
 
     @app.post("/api/routers", dependencies=[Depends(admin)])
@@ -517,10 +536,11 @@ def create_app(
             raise HTTPException(409, "Ya existe un router con esa IP y puerto")
         cur = db.execute(
             "INSERT INTO routers(name, host, port, username, password, use_ssl, types, include, "
-            "enabled, updated_at, pppoe_enabled, syslog_ip) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "enabled, updated_at, pppoe_enabled, syslog_ip, cfg_backup, ssh_port) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (v["name"], v["host"], v["port"], v["username"], body.password, v["use_ssl"],
              v["types"], v["include"], v["enabled"], time.time(), v["pppoe_enabled"],
-             v["syslog_ip"]),
+             v["syslog_ip"], v["cfg_backup"], v["ssh_port"]),
         )
         _sync()
         return {"id": cur.lastrowid}
@@ -539,9 +559,10 @@ def create_app(
         password = body.password or old["password"]
         db.execute(
             "UPDATE routers SET name=?, host=?, port=?, username=?, password=?, use_ssl=?, types=?, "
-            "include=?, enabled=?, updated_at=?, pppoe_enabled=?, syslog_ip=? WHERE id=?",
+            "include=?, enabled=?, updated_at=?, pppoe_enabled=?, syslog_ip=?, cfg_backup=?, ssh_port=? WHERE id=?",
             (v["name"], v["host"], v["port"], v["username"], password, v["use_ssl"], v["types"],
-             v["include"], v["enabled"], time.time(), v["pppoe_enabled"], v["syslog_ip"], rid),
+             v["include"], v["enabled"], time.time(), v["pppoe_enabled"], v["syslog_ip"],
+             v["cfg_backup"], v["ssh_port"], rid),
         )
         _sync()
         return {"id": rid}
@@ -556,6 +577,7 @@ def create_app(
         if start_poller:
             poller.sync()  # detiene el hilo del router
         remote.remove_peer(rid)     # si era un router remoto, libera su túnel
+        backup.forget_router(rid)   # (los archivos ya guardados se conservan en disco)
         engine.forget_router(rid)   # resuelve sus alertas
         pppoe.forget_router(rid)    # y olvida sus sesiones PPPoE
         return {"deleted": rid}
@@ -685,6 +707,26 @@ def create_app(
         res["now"] = time.time()
         return res
 
+    @app.get("/api/pppoe/repeat", dependencies=[Depends(viewer)])
+    def pppoe_repeat(days: int = 7, min: int = 3, router_id: int | None = None, q: str = "",
+                     limit: int = 200, mass: bool = False):
+        """Clientes que se desconectan seguido. `mass=true` cuenta también las caídas masivas."""
+        days = max(1, min_(days, 35))
+        rows = pppoe.repeat_offenders(days, max(2, min), router_id, q, max(1, min_(limit, 1000)), not mass)
+        names = {r["id"]: r["name"] for r in db.query("SELECT id, name FROM routers")}
+        pons = {r["id"]: f"{r['olt']} · {r['pon']}" for r in db.query(
+            "SELECT p.id, p.name AS pon, o.name AS olt FROM pons p JOIN olts o ON o.id = p.olt_id")}
+        per_pon: dict[str, int] = {}
+        for r in rows:
+            r["router"] = names.get(r["router_id"], "?")
+            loc = topology.locate(r["address"]) if r["address"] else None
+            r["pon"] = pons.get(loc[0], "") if loc else ""
+            if r["pon"]:
+                per_pon[r["pon"]] = per_pon.get(r["pon"], 0) + 1
+        # Varios clientes problemáticos en el mismo PON apuntan a la red (fibra/splitter), no a cada cliente.
+        hot = sorted(({"pon": k, "clients": v} for k, v in per_pon.items() if v >= 3), key=lambda x: -x["clients"])
+        return {"now": time.time(), "days": days, "min": max(2, min), "total": len(rows), "rows": rows, "hot_pons": hot}
+
     @app.get("/api/pppoe/search", dependencies=[Depends(viewer)])
     def pppoe_search(q: str = ""):
         rows = pppoe.search(q)
@@ -709,6 +751,51 @@ def create_app(
             (*params, max(1, min(limit, 1000))),
         )
         return {"now": time.time(), "events": _with_reason(rows)}
+
+    # ------------------------------------------------------------------ respaldos
+
+    @app.get("/api/backups", dependencies=[Depends(admin)])
+    def backups_list():
+        return {**backup.listing(), "now": time.time()}
+
+    @app.post("/api/backups/db", dependencies=[Depends(admin)])
+    def backups_db_now():
+        try:
+            return backup.backup_db()
+        except BackupError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"{type(exc).__name__}: {exc}") from None
+
+    @app.post("/api/backups/routers/{rid}", dependencies=[Depends(admin)])
+    def backups_router_now(rid: int):
+        router = db.one("SELECT * FROM routers WHERE id=?", (rid,))
+        if not router:
+            raise HTTPException(404, "Router no encontrado")
+        try:
+            return backup.backup_router(router, force=True)
+        except BackupError as exc:
+            raise HTTPException(502, str(exc)) from None
+
+    @app.put("/api/backups/routers/{rid}/config", dependencies=[Depends(admin)])
+    def backups_router_config(rid: int, body: BackupRouterIn):
+        if not db.one("SELECT id FROM routers WHERE id=?", (rid,)):
+            raise HTTPException(404, "Router no encontrado")
+        db.execute("UPDATE routers SET cfg_backup=?, ssh_port=? WHERE id=?", (int(body.cfg_backup), body.ssh_port, rid))
+        return {"ok": True}
+
+    @app.delete("/api/backups/routers/{rid}/hostkey", dependencies=[Depends(admin)])
+    def backups_forget_key(rid: int):
+        backup.forget_host_key(rid)
+        return {"ok": True}
+
+    @app.get("/api/backups/download", dependencies=[Depends(admin)])
+    def backups_download(kind: str, name: str, router_id: int | None = None):
+        path = backup.path_for(kind, name, router_id)
+        if path is None:
+            raise HTTPException(404, "Archivo no encontrado")
+        return FileResponse(path, filename=path.name, media_type="application/octet-stream",
+                            headers={"Cache-Control": "no-store"})
 
     # --------------------------------------------------- OLT / PON / mapa de red
 

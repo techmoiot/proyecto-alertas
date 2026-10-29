@@ -64,6 +64,7 @@ fi
 
 install -m 755 "$SRC/update.sh" /usr/local/bin/magi-update
 install -m 755 "$SRC/scripts/magi-passwd" /usr/local/bin/magi-passwd
+install -m 755 "$SRC/scripts/magi-restore" /usr/local/bin/magi-restore
 
 say "Preparando la conexión remota (WireGuard)"
 mkdir -p "$CONF_DIR/wg"

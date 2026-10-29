@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Restaura la base de MAGI desde un respaldo:  magi-restore /ruta/magi-AAAAMMDD-HHMMSS.db.gz
+set -euo pipefail
+[ "$(id -u)" -eq 0 ] || { echo "Ejecutalo como root:  sudo magi-restore ARCHIVO" >&2; exit 1; }
+FILE="${1:-}"
+[ -n "$FILE" ] && [ -f "$FILE" ] || { echo "Uso: magi-restore /ruta/al/respaldo.db.gz" >&2; exit 1; }
+set -a; . /etc/mk-monitor/mk-monitor.env; set +a
+DB="${MKMON_DB:-/var/lib/mk-monitor/mkmonitor.db}"
+
+TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+case "$FILE" in
+  *.gz) gunzip -c "$FILE" > "$TMP" ;;
+  *)    cp "$FILE" "$TMP" ;;
+esac
+head -c 15 "$TMP" | grep -q "SQLite format 3" || { echo "El archivo no es una base de datos de MAGI válida." >&2; exit 1; }
+
+echo "Deteniendo MAGI..."
+systemctl stop mk-monitor
+SAFE="$DB.antes-de-restaurar-$(date +%Y%m%d-%H%M%S)"
+if [ -f "$DB" ]; then cp -a "$DB" "$SAFE"; echo "La base actual quedó guardada en $SAFE"; fi
+rm -f "$DB-wal" "$DB-shm"
+install -o mkmonitor -g mkmonitor -m 600 "$TMP" "$DB"
+systemctl start mk-monitor
+echo "Listo: base restaurada desde $FILE"

@@ -509,9 +509,47 @@ async function renderPppoe() {
     $("#pppoeDown").innerHTML = downTableHTML(down);
     $("#pppoeEvents").innerHTML = eventsTableHTML(ev);
     renderPppoeReg();
+    renderPppoeRep();
     if ($("#pppoeLogBox").open) renderPppoeLog();
   } catch (e) {
     $("#pppoeSummary").innerHTML = `<div class="card router-err">${esc(e.message)}</div>`;
+  }
+}
+
+function repeatHTML(res) {
+  const hot = res.hot_pons.length
+    ? `<p class="router-err" style="margin:.2rem 0 .6rem">⚠ Varios clientes problemáticos en el mismo PON: ${res.hot_pons
+        .map((h) => `<b>${esc(h.pon)}</b> (${h.clients})`).join(", ")}. Puede ser la fibra o el splitter, no cada cliente.</p>`
+    : "";
+  if (!res.rows.length) {
+    return { hot, table: `<p class="muted">Nadie llegó a ${res.min} caídas en ${res.days === 1 ? "el último día" : "los últimos " + res.days + " días"}. ✅</p>` };
+  }
+  const now = res.now;
+  const rows = res.rows
+    .map((r) => {
+      const others = r.reasons.slice(1).map((x) => `${esc(x.reason_es || x.reason)} ×${x.n}`).join(" · ");
+      const top = r.top_reason ? `${esc(r.top_reason_es || r.top_reason)} <span class="muted">×${r.reasons[0].n}</span>` : '<span class="muted">sin motivo en el log</span>';
+      const st = r.state === "up" ? '<span class="pill">conectado</span>' : r.state === "down" ? '<span class="pill crit">caído</span>' : "";
+      return `<tr><td><b>${esc(r.name)}</b><div class="muted mono">${esc(r.address)}</div></td><td>${esc(r.router)}</td><td>${esc(r.pon) || '<span class="muted">—</span>'}</td>
+        <td class="num"><b>${r.count}</b><div class="muted">${r.per_day}/día</div></td>
+        <td>${ago(r.last_ts, now)}</td><td>${top}${others ? `<div class="muted">${others}</div>` : ""}</td><td>${st}</td></tr>`;
+    })
+    .join("");
+  return { hot, table: `<table><thead><tr><th>Cliente</th><th>Router</th><th>PON</th><th class="num">Caídas</th><th>Última</th><th>Motivo más común</th><th>Ahora</th></tr></thead><tbody>${rows}</tbody></table>` };
+}
+
+async function renderPppoeRep() {
+  const box = $("#pppoeRep");
+  if (!box) return;
+  const rid = $("#pppoeRouter").value;
+  try {
+    const res = await api(`/api/pppoe/repeat?days=${$("#pppoeRepDays").value}&min=${$("#pppoeRepMin").value}${rid ? "&router_id=" + rid : ""}`);
+    $("#pppoeRepCount").textContent = res.total ? `(${res.total})` : "";
+    const v = repeatHTML(res);
+    $("#pppoeRepHot").innerHTML = v.hot;
+    box.innerHTML = v.table;
+  } catch (e) {
+    box.innerHTML = `<p class="router-err">${esc(e.message)}</p>`;
   }
 }
 
@@ -620,6 +658,10 @@ const SETTING_FIELDS = [
   ["router_down_after", "Lecturas fallidas para marcar caído", "Cuántas lecturas seguidas sin respuesta antes de alertar."],
   ["sample_every_s", "Intervalo del historial (s)", "Cada cuánto se guarda un punto para los gráficos."],
   ["retention_days", "Días de historial", "Los puntos más viejos se borran solos."],
+  ["backup_enabled", "Respaldos automáticos (1 = sí, 0 = no)", "Base de MAGI y configuración de los routers que tengan el respaldo activado."],
+  ["backup_every_h", "Cada cuántas horas respaldar", "24 = una vez al día."],
+  ["backup_keep", "Copias de la base de MAGI que se conservan", "Las más viejas se borran solas."],
+  ["router_backup_keep", "Versiones de la config de cada router que se conservan", "Solo se guarda una versión nueva si la configuración cambió."],
   ["pppoe_enabled", "Monitorear PPPoE (1 = sí, 0 = no)", "Apaga todo el monitoreo de clientes PPPoE."],
   ["pppoe_poll_s", "Lectura de clientes PPPoE (s)", "Cada cuántos segundos se lee la lista de clientes conectados."],
   ["pppoe_grace_s", "Segundos caído antes de alertar", "Si el cliente se reconecta antes, no se alerta: en PPPoE es normal."],
@@ -681,6 +723,8 @@ async function renderConfig() {
           <span class="muted">Contiene el token de registro: no lo compartas fuera de tu equipo.</span></div>
         <pre class="script" id="scriptText">${esc(script)}</pre></div>
 
+      <div class="card"><h2>Respaldos</h2><div id="backupsBox"><p class="muted">Cargando…</p></div></div>
+
       <div class="card"><h2>Router REMOTO (por Internet)</h2>
         <div id="remoteBox"><p class="muted">Cargando…</p></div></div>
 
@@ -702,6 +746,8 @@ async function renderConfig() {
           <div class="field"><label>Usar SSL</label><select id="f_ssl"><option value="0">No</option><option value="1">Sí</option></select></div>
           <div class="field"><label>Monitoreo</label><select id="f_enabled"><option value="1">Activo</option><option value="0">Pausado</option></select></div>
           <div class="field"><label>Clientes PPPoE</label><select id="f_pppoe"><option value="1">Monitorear</option><option value="0">No monitorear</option></select></div>
+          <div class="field"><label>Respaldar la configuración (SSH)</label><select id="f_cfgbackup"><option value="0">No</option><option value="1">Sí</option></select><small>Necesita el permiso «ssh» en el usuario del router.</small></div>
+          <div class="field"><label>Puerto SSH</label><input id="f_sshport" type="number" value="22"></div>
           <div class="field"><label>IP de origen del syslog</label><input id="f_syslog" placeholder="(igual a la IP del router)"><small>Solo si el router manda el log desde otra IP.</small></div>
         </div>
         <div class="row" style="margin-top:.8rem"><button id="saveRouter">Guardar</button>
@@ -726,6 +772,7 @@ async function renderConfig() {
         Se cambia con <code>MKMON_SYSLOG_PORT</code> (0 = apagado).</p></div>`;
 
     if (typeof renderUsers === "function") renderUsers();
+    if (typeof renderBackups === "function") renderBackups();
     if (typeof renderRemote === "function") renderRemote();
     if (typeof renderOltConfig === "function") renderOltConfig();
     if (cfgRouter != null) renderIfaces();
@@ -774,6 +821,8 @@ function formData() {
     enabled: $("#f_enabled").value === "1",
     pppoe_enabled: $("#f_pppoe").value === "1",
     syslog_ip: $("#f_syslog").value.trim(),
+    cfg_backup: $("#f_cfgbackup").value === "1",
+    ssh_port: parseInt($("#f_sshport").value, 10) || 22,
   };
 }
 
@@ -789,6 +838,8 @@ function fillForm(r) {
   $("#f_enabled").value = r.enabled ? "1" : "0";
   $("#f_pppoe").value = r.pppoe_enabled ? "1" : "0";
   $("#f_syslog").value = r.syslog_ip || "";
+  $("#f_cfgbackup").value = r.cfg_backup ? "1" : "0";
+  $("#f_sshport").value = r.ssh_port || 22;
   $("#f_passhelp").textContent = "Vacía = se mantiene la actual.";
   $("#formTitle").textContent = "Editar router";
   $("#cancelEdit").hidden = false;
@@ -923,6 +974,7 @@ document.addEventListener("change", (ev) => {
   if (ev.target.id === "histFilter") renderHistory();
   if (ev.target.id === "pppoeRouter") renderPppoe();
   if (ev.target.id === "pppoeRegKind") renderPppoeReg();
+  if (ev.target.id === "pppoeRepDays" || ev.target.id === "pppoeRepMin") renderPppoeRep();
 });
 
 let searchTimer = null;

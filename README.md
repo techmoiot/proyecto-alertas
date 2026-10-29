@@ -286,3 +286,26 @@ lista a los que no tienen sesión: su última desconexión (`last-logged-out` de
 (`last-disconnect-reason`, o el del log si llega por syslog), perfil y nota/comentario. Distingue entre *sin conexión*,
 *deshabilitado* (suspendido) y *nunca se conectó*. Esta lista no genera alertas. Si el router usa RADIUS no tiene
 Secrets y la lista queda vacía.
+
+## Clientes con caídas repetidas
+
+En la pestaña **PPPoE**, la tarjeta «Clientes con caídas repetidas» lista a quienes se desconectaron al menos 3, 5 o 10 veces
+en el último día, 7 o 30 días, con su motivo más común, el PON y cuándo fue la última. Las desconexiones dentro de una
+caída masiva (un sector sin luz) no cuentan. Si varios clientes problemáticos están en el mismo PON, se avisa: suele ser la
+fibra o el splitter y no cada cliente. El historial de desconexiones se conserva 35 días.
+
+## Respaldos
+
+En **Configuración → Respaldos**:
+
+- **Base de MAGI:** copia automática cada 24 h (configurable en «Umbrales y detección»), comprimida, en
+  `/var/lib/mk-monitor/backups/db/`; se conservan las últimas 14. Botón «Respaldar ahora» y descarga. Cada copia contiene
+  contraseñas de routers y claves del túnel: guardala en un lugar seguro. Restaurar, en el servidor y como root:
+  `magi-restore /ruta/magi-AAAAMMDD-HHMMSS.db.gz` (detiene MAGI, guarda la base actual y restaura).
+- **Configuración de los MikroTik (opcional, por router):** `/export terse` por **SSH**. Solo se guarda una versión nueva si la
+  configuración cambió; se conservan las últimas 30 versiones de cada router. Requiere el servicio SSH accesible desde el
+  servidor y que el usuario del router tenga el permiso `ssh`:
+  `/user group set monitor-ro policy=read,api,ssh`. Los scripts de router **remoto** nuevos ya lo incluyen (y la regla de
+  firewall del puerto 22 por el túnel); a los ya conectados hay que darles el permiso y la regla a mano. La clave SSH del
+  router se memoriza la primera vez y se avisa si cambia («Olvidar clave SSH» para aceptar una nueva).
+  Al ser de solo lectura, el export no trae contraseñas.

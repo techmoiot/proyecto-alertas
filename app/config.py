@@ -25,6 +25,7 @@ class Config:
     telegram_chat: str
     syslog_port: int
     # Conexión remota por WireGuard (ver app/wg.py)
+    backup_dir: str = ""                                    # por defecto, <carpeta de la base>/backups
     wg_network: str = "10.77.0.0/24"
     wg_port: int = 51821
     wg_endpoint: str = ""                                  # IP pública o dominio del servidor
@@ -49,6 +50,7 @@ def load() -> Config:
         telegram_chat=os.environ.get("MKMON_TELEGRAM_CHAT", ""),
         # 0 = no escuchar syslog. En modo demo no se abre ningún puerto salvo que se pida.
         syslog_port=int(os.environ.get("MKMON_SYSLOG_PORT", "0" if demo else "5140")),
+        backup_dir=os.environ.get("MKMON_BACKUP_DIR", ""),
         wg_network=os.environ.get("MKMON_WG_NETWORK", "10.77.0.0/24"),
         wg_port=int(os.environ.get("MKMON_WG_PORT", "51821")),
         wg_endpoint=os.environ.get("MKMON_WG_ENDPOINT", ""),

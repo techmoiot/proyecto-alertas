@@ -27,6 +27,7 @@ ALERT_NONE, ALERT_FIRED, ALERT_SUPPRESSED, ALERT_EXPIRED = 0, 1, 2, 3
 REASON_MAX_AGE_S = 300
 CHECKPOINT_EVERY_S = 300
 FORGET_DOWN_AFTER_S = 60 * 86400
+EVENTS_KEEP_DAYS = 35               # historial de desconexiones (para «caídas repetidas»)
 
 _UPTIME = re.compile(r"(\d+)([wdhms])")
 _UNIT = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
@@ -415,7 +416,9 @@ class PPPoEMonitor:
         now = self.clock() if now is None else now
         s = self.db.get_settings()
         with self._lock:
-            self.db.execute("DELETE FROM pppoe_events WHERE ts < ?", (now - s["retention_days"] * 86400,))
+            # Las desconexiones se guardan más que el tráfico: sirven para detectar a los que "se caen seguido".
+            keep_days = max(s["retention_days"], EVENTS_KEEP_DAYS)
+            self.db.execute("DELETE FROM pppoe_events WHERE ts < ?", (now - keep_days * 86400,))
             cutoff = now - FORGET_DOWN_AFTER_S
             for rid, sess in self.sessions.items():
                 for name in [n for n, se in sess.items() if se.state == "down" and se.since < cutoff]:
@@ -423,6 +426,65 @@ class PPPoEMonitor:
                     self.db.execute("DELETE FROM pppoe_sessions WHERE router_id=? AND name=?", (rid, name))
 
     # ------------------------------------------------------------- vistas para la API
+
+    def repeat_offenders(self, days: int = 7, min_events: int = 3, router_id: int | None = None,
+                         q: str = "", limit: int = 200, exclude_mass: bool = True) -> list[dict]:
+        """Clientes con muchas desconexiones en los últimos `days` días (cable, conector o equipo dañado).
+
+        Las desconexiones que ocurren dentro de una caída masiva (un sector sin luz, por ejemplo) no
+        cuentan: no son culpa del cliente.
+        """
+        now = self.clock()
+        since = now - days * 86400
+        mass_buf = self.db.get_settings()["pppoe_mass_window_s"] + 60
+        where = ["e.event = 'disconnect'", "e.ts >= ?"]
+        params: list = [since]
+        if router_id is not None:
+            where.append("e.router_id = ?")
+            params.append(router_id)
+        if q.strip():
+            where.append("e.user LIKE ?")
+            params.append(f"%{q.strip()}%")
+        if exclude_mass:
+            where.append(
+                "NOT EXISTS (SELECT 1 FROM alerts a WHERE a.kind = 'pppoe_mass' AND a.router_id = e.router_id "
+                "AND e.ts >= a.started_at - ? AND e.ts <= COALESCE(a.resolved_at, ?) + ?)"
+            )
+            params += [mass_buf, now, mass_buf]
+        rows = self.db.query(
+            "SELECT e.router_id, e.user, e.reason, COUNT(*) AS n, MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts "
+            f"FROM pppoe_events e WHERE {' AND '.join(where)} GROUP BY e.router_id, e.user, e.reason",
+            params,
+        )
+        agg: dict[tuple[int, str], dict] = {}
+        for r in rows:
+            a = agg.setdefault((r["router_id"], r["user"]), {
+                "router_id": r["router_id"], "name": r["user"], "count": 0,
+                "first_ts": r["first_ts"], "last_ts": r["last_ts"], "reasons": {},
+            })
+            a["count"] += r["n"]
+            a["first_ts"] = min(a["first_ts"], r["first_ts"])
+            a["last_ts"] = max(a["last_ts"], r["last_ts"])
+            if r["reason"]:
+                a["reasons"][r["reason"]] = a["reasons"].get(r["reason"], 0) + r["n"]
+        out = []
+        with self._lock:
+            for (rid, name), a in agg.items():
+                if a["count"] < min_events:
+                    continue
+                se = self.sessions.get(rid, {}).get(name)
+                reasons = sorted(a.pop("reasons").items(), key=lambda kv: -kv[1])
+                top = reasons[0][0] if reasons else ""
+                a.update({
+                    "reasons": [{"reason": k, "n": v, "reason_es": explain_reason(k)} for k, v in reasons[:4]],
+                    "top_reason": top, "top_reason_es": explain_reason(top) if top else "",
+                    "state": se.state if se else "", "status": self._status(se) if se else "",
+                    "address": se.address if se else "",
+                    "per_day": round(a["count"] / max(days, 1), 1),
+                })
+                out.append(a)
+        out.sort(key=lambda a: (-a["count"], -a["last_ts"]))
+        return out[:limit]
 
     def summary(self) -> dict[int, dict]:
         with self._lock:

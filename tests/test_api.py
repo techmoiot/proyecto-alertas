@@ -84,7 +84,7 @@ def test_health_is_open_and_everything_else_requires_login(app):
 
 def test_static_pages_are_served(client):
     for path, marker in (("/", "MAGI"), ("/app.js", "refresh"), ("/style.css", "--bg"), ("/network.js", "renderNetwork"),
-                        ("/remote.js", "renderRemote"), ("/users.js", "renderUsers"), ("/login", "MELCHIOR")):
+                        ("/remote.js", "renderRemote"), ("/users.js", "renderUsers"), ("/backups.js", "renderBackups"), ("/login", "MELCHIOR")):
         r = client.get(path)
         assert r.status_code == 200 and marker in r.text, path
 
@@ -383,7 +383,7 @@ def test_router_pppoe_fields_roundtrip_and_defaults(client):
 
 def test_pppoe_endpoints_require_login_and_admin_for_syslog(app):
     with TestClient(app) as c:
-        for p in ("summary", "down", "search?q=ab", "events", "syslog", "registered"):
+        for p in ("summary", "down", "search?q=ab", "events", "syslog", "registered", "repeat"):
             assert c.get(f"/api/pppoe/{p}").status_code == 401, p
 
 
@@ -561,3 +561,29 @@ def test_secret_read_error_is_reported_not_fatal(client, app):
     app.state.pppoe.process_secrets_error({"id": rid}, "no permission")
     r = client.get("/api/pppoe/registered").json()
     assert r["total"] == 0 and "no permission" in r["routers"][0]["error"]
+
+
+def test_repeat_offenders_counts_disconnects_ignores_mass_and_flags_hot_pon(client, app):
+    rid = add_router(client)
+    router = {"id": rid, "name": "Core", "host": "10.0.0.1"}
+    pppoe = app.state.pppoe
+    db = app.state.db
+    t = time.time() - 3 * 86400
+    # cli001 se cae 4 veces (con motivo), cli002 una sola vez
+    for k in range(4):
+        pppoe.process_active(router, pppoe_rows(2), t + k * 600)
+        pppoe.process_active(router, pppoe_rows(2, skip=(1,)), t + k * 600 + 100)
+        pppoe.on_syslog("10.0.0.1", "pppoe,ppp,info <pppoe-cli001>: terminating... - peer is not responding", t + k * 600 + 101)
+        pppoe.process_active(router, pppoe_rows(2), t + k * 600 + 300)
+    pppoe.process_active(router, pppoe_rows(2, skip=(2,)), t + 5000)
+    pppoe.process_active(router, pppoe_rows(2), t + 5100)
+    r = client.get("/api/pppoe/repeat?days=7&min=3").json()
+    assert [x["name"] for x in r["rows"]] == ["cli001"] and r["rows"][0]["count"] == 4
+    assert r["rows"][0]["router"] == "Core" and r["rows"][0]["per_day"] == round(4 / 7, 1)
+    assert client.get("/api/pppoe/repeat?days=1&min=3").json()["total"] == 0           # fuera de la ventana
+    assert client.get("/api/pppoe/repeat?q=zzz").json()["total"] == 0
+    # una caída masiva que cubre esas desconexiones las descuenta
+    db.execute("INSERT INTO alerts(router_id, iface, kind, severity, message, started_at, resolved_at) "
+               "VALUES(?,?,?,?,?,?,?)", (rid, "PPPoE", "pppoe_mass", "critical", "x", t - 10, t + 99999))
+    assert client.get("/api/pppoe/repeat?days=7&min=3").json()["total"] == 0
+    assert client.get("/api/pppoe/repeat?days=7&min=3&mass=true").json()["total"] == 1

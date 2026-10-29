@@ -48,15 +48,19 @@
   :do {
     /ip firewall filter add chain=input action=accept in-interface=$wg src-address=($srvIp . "/32") protocol=tcp dst-port=$apiPort comment="MAGI api" place-before=0
     /ip firewall filter add chain=input action=accept in-interface=$wg src-address=($srvIp . "/32") protocol=icmp comment="MAGI ping" place-before=0
+    /ip firewall filter add chain=input action=accept in-interface=$wg src-address=($srvIp . "/32") protocol=tcp dst-port=22 comment="MAGI ssh (respaldo de config)" place-before=0
   } on-error={
     /ip firewall filter add chain=input action=accept in-interface=$wg src-address=($srvIp . "/32") protocol=tcp dst-port=$apiPort comment="MAGI api"
     /ip firewall filter add chain=input action=accept in-interface=$wg src-address=($srvIp . "/32") protocol=icmp comment="MAGI ping"
+    /ip firewall filter add chain=input action=accept in-interface=$wg src-address=($srvIp . "/32") protocol=tcp dst-port=22 comment="MAGI ssh (respaldo de config)"
   }
 }
 
 # 3) Usuario de solo lectura y API limitada al servidor
 :if ([:len [/user group find name="monitor-ro"]] = 0) do={
-  /user group add name="monitor-ro" policy=read,api comment="MAGI: solo lectura"
+  /user group add name="monitor-ro" policy=read,api,ssh comment="MAGI: solo lectura"
+} else={
+  /user group set [find name="monitor-ro"] policy=read,api,ssh
 }
 :if ([:len [/user find name=$apiUser]] = 0) do={
   /user add name=$apiUser group="monitor-ro" password=$apiPass comment="MAGI"

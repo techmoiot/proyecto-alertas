@@ -137,6 +137,8 @@ CREATE INDEX IF NOT EXISTS idx_pons_olt ON pons(olt_id, pos);
 MIGRATIONS = [
     ("routers", "pppoe_enabled", "INTEGER NOT NULL DEFAULT 1"),
     ("routers", "syslog_ip", "TEXT NOT NULL DEFAULT ''"),
+    ("routers", "cfg_backup", "INTEGER NOT NULL DEFAULT 0"),
+    ("routers", "ssh_port", "INTEGER NOT NULL DEFAULT 22"),
     ("olts", "cards", "INTEGER NOT NULL DEFAULT 1"),
     ("olts", "ports_per_card", "INTEGER NOT NULL DEFAULT 0"),
     ("pons", "card", "INTEGER NOT NULL DEFAULT 1"),
@@ -168,6 +170,10 @@ DEFAULT_SETTINGS: dict[str, float] = {
     "pon_min_clients": 4,        # un PON con menos clientes conocidos no genera alerta de sector
     "pon_down_after_s": 30,      # segundos sostenido antes de alertar (y antes de resolver)
     "pppoe_expire_h": 24,        # horas que una alerta de cliente caído queda activa
+    "backup_enabled": 1,         # respaldos automáticos (1 = sí)
+    "backup_every_h": 24,        # cada cuántas horas se respalda la base de MAGI y la config de los routers
+    "backup_keep": 14,           # copias de la base de MAGI que se conservan
+    "router_backup_keep": 30,    # versiones distintas de la config de cada router que se conservan
 }
 
 
