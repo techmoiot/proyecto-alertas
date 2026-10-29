@@ -112,7 +112,7 @@ function netApply(snap) {
     const pid = "pon:" + p.id;
     const isNew = !NET.byId.has(pid);
     const pon = netUpsert(pid, {
-      type: "pon", r: 14, cr: 30, x: ox * R, y: oy * R, label: p.name,
+      type: "pon", r: 14, cr: 30, x: ox * R, y: oy * R, label: p.label || p.name,
       sub: (p.vlan ? "VLAN " + p.vlan + " · " : "") + (p.total - p.down) + "/" + p.total,
       status: p.status, alert: p.alert, pon: p, ponId: p.id, ox, oy,
     });
@@ -644,7 +644,7 @@ function netRenderPanel() {
       <td class="mono">${esc(c[2])}</td></tr>`)
     .join("");
   box.innerHTML = `<button class="ghost small close" id="netPanelClose" aria-label="Cerrar">✕</button>
-    <h3>${esc(pon.name)} <span class="pill ${pon.status === "down" ? "crit" : pon.status === "warn" ? "warn" : ""}">${st}</span></h3>
+    <h3>${esc(pon.label || pon.name)} <span class="pill ${pon.status === "down" ? "crit" : pon.status === "warn" ? "warn" : ""}">${st}</span></h3>
     <div class="muted" style="margin-bottom:.5rem">${pon.vlan ? "VLAN " + pon.vlan + " · " : ""}${pon.total - pon.down} de ${pon.total} clientes en línea${pon.total ? ` (${pon.pct}% caídos)` : ""}</div>
     ${pools || '<p class="muted">Este PON no tiene pools configurados.</p>'}
     <div class="row" style="margin:.6rem 0"><button class="ghost small" id="netFocus">Acercar</button></div>
@@ -676,7 +676,7 @@ function netRenderSummary() {
   ban.innerHTML = bad.length
     ? `<div class="netbanner">${bad
         .slice(0, 8)
-        .map((p) => `<button class="netsector" data-netpon="${p.id}">🔴 ${esc(p.name)}${p.vlan ? " · VLAN " + p.vlan : ""} — sector caído: ${p.down}/${p.total} (${p.pct}%)</button>`)
+        .map((p) => `<button class="netsector" data-netpon="${p.id}">🔴 ${esc(p.label || p.name)}${p.vlan ? " · VLAN " + p.vlan : ""} — sector caído: ${p.down}/${p.total} (${p.pct}%)</button>`)
         .join("")}${bad.length > 8 ? `<span class="muted">y ${bad.length - 8} más</span>` : ""}</div>`
     : "";
   const sel = $("#netOlt");

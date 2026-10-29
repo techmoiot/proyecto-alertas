@@ -283,3 +283,45 @@ def test_cards_layout_is_validated_and_saved(tmp_path):
         topo.save_olt("OLT-A", pons, oid, cards=0, ports_per_card=2)
     with pytest.raises(ConfigError):
         topo.save_olt("OLT-A", pons, oid, cards=40, ports_per_card=2)
+
+
+def two_card_pons():
+    """«PON 1» y «PON 2» existen en las dos tarjetas (mismo nombre, tarjetas distintas)."""
+    out = []
+    for card in (1, 2):
+        for port in (1, 2):
+            n = (card - 1) * 2 + port
+            out.append({"name": f"PON {port}", "vlan": 100 + n, "card": card,
+                        "inet_cidr": f"10.{n}.0.0/25", "tv_cidr": f"10.{n}.0.128/25"})
+    return out
+
+
+def test_same_pon_name_is_allowed_on_different_cards_but_not_on_the_same_one():
+    assert len(validate_pons(two_card_pons(), cards=2, ports_per_card=2)) == 4
+    dup = two_card_pons()
+    dup[1]["name"] = "PON 1"                       # «PON 1» dos veces en la tarjeta 1
+    with pytest.raises(ConfigError, match="tarjeta 1"):
+        validate_pons(dup, cards=2, ports_per_card=2)
+    with pytest.raises(ConfigError, match="mismo nombre"):
+        validate_pons([{"name": "a"}, {"name": "A"}])         # con una sola tarjeta sigue igual
+
+
+def test_duplicate_names_get_unique_labels_alerts_and_restore(db, engine, mon, router):
+    t = Topology(db, engine, mon)
+    t.save_olt("OLT-B", two_card_pons(), cards=2, ports_per_card=2)
+    snap = t.snapshot(T0)["olts"][0]["pons"]
+    assert [p["label"] for p in snap] == ["PON 1 (T1)", "PON 2 (T1)", "PON 1 (T2)", "PON 2 (T2)"]
+    # se cae la tarjeta 2, puerto 1 (PON 3 = 10.3.x): la alerta dice cuál de los dos «PON 1» es
+    full = {f"c{n}-{i}": f"10.{n}.0.{i + 1}" for n in (1, 2, 3, 4) for i in range(8)}
+    mon.process_active(router, rows(full), T0)
+    mon.process_active(router, rows({k: v for k, v in full.items() if not v.startswith("10.3.")}), T0 + 15)
+    t.evaluate(T0 + 16)
+    t.evaluate(T0 + 60)
+    alerts = active_pon_alerts(db)
+    assert [a["iface"] for a in alerts] == ["OLT-B · PON 1 (T2)"]
+    assert "PON 1 (T2)" in alerts[0]["message"]
+    # tras reiniciar, se retoma la alerta del PON correcto y no la del homónimo
+    from app.engine import Engine
+    topo2 = Topology(db, Engine(db), PPPoEMonitor(db, Engine(db)))
+    flags = {p["label"]: p["alert"] for p in topo2.snapshot(T0 + 70)["olts"][0]["pons"]}
+    assert flags == {"PON 1 (T1)": False, "PON 2 (T1)": False, "PON 1 (T2)": True, "PON 2 (T2)": False}

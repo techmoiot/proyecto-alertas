@@ -83,9 +83,13 @@ def validate_pons(pons: list[dict], cards: int = 1, ports_per_card: int = 0) -> 
             n_c = sum(1 for r in out if r["card"] == c)
             if n_c > ports_per_card:
                 raise ConfigError(f"La tarjeta {c} tiene {n_c} PON pero solo {ports_per_card} puertos")
-    names = [r["name"].lower() for r in out]
-    if len(set(names)) != len(names):
-        raise ConfigError("Hay dos PON con el mismo nombre")
+    seen = set()
+    for r in out:
+        k = (r["card"], r["name"].lower())
+        if k in seen:
+            where = f" en la tarjeta {r['card']}" if cards > 1 else ""
+            raise ConfigError(f"Hay dos PON con el mismo nombre{where}: «{r['name']}»")
+        seen.add(k)
     for i, (a, la) in enumerate(nets):
         for b, lb in nets[i + 1:]:
             if a.overlaps(b):
@@ -142,6 +146,14 @@ def detect_pons(vlans: list[dict], addresses: list[dict],
         pons.append({"name": f"PON {len(pons) + 1}", "vlan": vid, "inet_cidr": inet, "tv_cidr": tv,
                      "from": f"{name} · {ifc.with_prefixlen}"})
     return {"pons": pons, "skipped": skipped}
+
+
+def pon_labels(pons: list[dict]) -> dict[int, str]:
+    """Nombre único de cada PON dentro de su OLT: si el nombre se repite en otra tarjeta, se agrega «(T2)»."""
+    count: dict[str, int] = {}
+    for p in pons:
+        count[p["name"].lower()] = count.get(p["name"].lower(), 0) + 1
+    return {p["id"]: (f"{p['name']} (T{p.get('card', 1)})" if count[p["name"].lower()] > 1 else p["name"]) for p in pons}
 
 
 class Topology:
@@ -288,6 +300,7 @@ class Topology:
         out = []
         for o in cfg:
             pons = []
+            labels = pon_labels(o["pons"])
             for p in o["pons"]:
                 pools = buckets.get(p["id"], [[], []])
                 pools_out = []
@@ -306,7 +319,8 @@ class Topology:
                     })
                 m = self._metrics(pools)
                 pons.append({
-                    "id": p["id"], "name": p["name"], "vlan": p["vlan"], "card": p["card"], "pools": pools_out,
+                    "id": p["id"], "name": p["name"], "label": labels[p["id"]], "vlan": p["vlan"], "card": p["card"],
+                    "pools": pools_out,
                     "total": m["total"], "down": m["down"],
                     "pct": round(m["pct"], 1), "alert": self._is_active(p["id"]),
                     "status": self._status(m, p["id"], settings),
@@ -350,13 +364,13 @@ class Topology:
         """Tras un reinicio, retoma las alertas de sector que seguían abiertas."""
         for key in self.engine.active:
             if key[0] == OLT_ROUTER_ID and key[2] == KIND:
-                olt_name, _, pon_name = key[1].partition(" · ")
-                rows = self.db.query(
-                    "SELECT p.id FROM pons p JOIN olts o ON o.id = p.olt_id WHERE o.name=? AND p.name=?",
-                    (olt_name, pon_name),
-                )
-                if rows:
-                    self._track[rows[0]["id"]] = {"active": True, "bad_since": None, "good_since": None}
+                olt_name, _, label = key[1].partition(" · ")
+                for o in self.olts():
+                    if o["name"] != olt_name:
+                        continue
+                    for pid, lab in pon_labels(o["pons"]).items():
+                        if lab == label:
+                            self._track[pid] = {"active": True, "bad_since": None, "good_since": None}
 
     def evaluate(self, now: float | None = None) -> None:
         """Abre o resuelve las alertas de sector caído. Se llama cada pocos segundos."""
@@ -377,7 +391,7 @@ class Topology:
                 m = self._metrics(pools, include_expired=tr["active"])
                 bad = m["total"] >= min_clients and m["pct"] >= pct
                 good = m["total"] < min_clients or m["pct"] < pct / 2
-                key = f"{olt['name']} · {pon['name']}"
+                key = f"{olt['name']} · {pon['label']}"
                 if not tr["active"]:
                     tr["good_since"] = None
                     if bad:
@@ -407,5 +421,5 @@ class Topology:
     @staticmethod
     def _message(olt: str, pon: dict, m: dict) -> str:
         vlan = f" (VLAN {pon['vlan']})" if pon["vlan"] else ""
-        return (f"Sector caído: {pon['name']}{vlan} de {olt} — {m['down']} de {m['total']} "
+        return (f"Sector caído: {pon['label']}{vlan} de {olt} — {m['down']} de {m['total']} "
                 f"clientes sin conexión ({m['pct']:.0f} %)")
