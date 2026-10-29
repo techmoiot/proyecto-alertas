@@ -317,3 +317,101 @@ def test_ssh_export_reports_bad_credentials_and_closed_port(db):
     free = socket.socket(); free.bind(("127.0.0.1", 0)); closed = free.getsockname()[1]; free.close()
     with pytest.raises(BackupError, match="No se pudo conectar"):
         ssh_export(db, {**router, "ssh_port": closed}, timeout=3)
+
+
+# ------------------------------------------------- respaldo completo y restauración
+
+import io
+import tarfile
+
+KEY = "A" * 43 + "="
+
+
+def _client_app(tmp_path, name, wg=None):
+    d = tmp_path / name
+    d.mkdir()
+    app = new_app(db_path=str(d / "m.db"), **({"wg_state_dir": str(wg)} if wg else {}))
+    app.state.restart = lambda: None           # en las pruebas no se reinicia el proceso
+    return app, d
+
+
+def test_full_backup_roundtrip_restores_everything_on_a_fresh_install(tmp_path):
+    (tmp_path / "wgA").mkdir()
+    (tmp_path / "wgA" / "server.key.export").write_text(KEY + "\n")
+    old, _ = _client_app(tmp_path, "old", tmp_path / "wgA")
+    with TestClient(old) as c:
+        login(c)
+        c.post("/api/users", json={"username": "tecnico", "password": "clave-tec-1234", "role": "admin"})
+        c.post("/api/routers", json={"name": "SG-ANTIGUA", "host": "10.0.0.9", "username": "u", "password": "p"})
+        r = c.get("/api/backups/full")
+        assert r.status_code == 200
+        blob = r.content
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        assert sorted(tar.getnames()) == ["manifest.json", "mkmonitor.db", "server.key"]
+
+    (tmp_path / "wgB").mkdir()
+    new, d = _client_app(tmp_path, "new", tmp_path / "wgB")
+    with TestClient(new) as c:
+        login(c)
+        assert c.get("/api/routers").json() == [] or not any(x["name"] == "SG-ANTIGUA" for x in c.get("/api/routers").json())
+        assert c.post("/api/backups/restore", content=blob).status_code == 400          # sin la cabecera de confirmación
+        r = c.post("/api/backups/restore", content=blob, headers={"X-Magi-Restore": "1"})
+        assert r.status_code == 200 and r.json()["wg_key"] is True and r.json()["restarting"] is True
+        assert (tmp_path / "wgB" / "server.key.import").read_text().strip() == KEY
+        assert oct((tmp_path / "wgB" / "server.key.import").stat().st_mode & 0o777) == "0o600"
+    with TestClient(new) as c2:
+        login(c2, "tecnico", "clave-tec-1234")          # los usuarios son los del respaldo
+        assert any(x["name"] == "SG-ANTIGUA" for x in c2.get("/api/routers").json())
+    # la base anterior quedó guardada como red de seguridad
+    assert list((d / "backups" / "db").glob("magi-*.db.gz"))
+
+
+def test_restore_accepts_plain_db_and_db_gz_and_rejects_garbage(tmp_path):
+    src, _ = _client_app(tmp_path, "src")
+    with TestClient(src) as c:
+        login(c)
+        made = c.post("/api/backups/db").json()
+        gz = c.get("/api/backups/download", params={"kind": "db", "name": made["name"]}).content
+    dst, _ = _client_app(tmp_path, "dst")
+    h = {"X-Magi-Restore": "1"}
+    with TestClient(dst) as c:
+        login(c)
+        assert c.post("/api/backups/restore", content=gz, headers=h).status_code == 200
+        raw = gzip.decompress(gz)
+        login(c)          # la sesión anterior firmaba con el secreto de la base vieja
+        r = c.post("/api/backups/restore", content=raw, headers=h)
+        assert r.status_code == 200 and r.json()["wg_key"] is False
+        login(c)
+        for bad in (b"hola, esto no es un respaldo", b"\x1f\x8b" + b"basura" * 20, b"SQLite format 3\x00" + b"\x00" * 200):
+            assert c.post("/api/backups/restore", content=bad, headers=h).status_code == 400
+        assert c.post("/api/backups/restore", content=b"", headers=h).status_code == 400
+
+
+def test_restore_and_full_download_require_admin(tmp_path):
+    app, _ = _client_app(tmp_path, "a")
+    with TestClient(app) as c:
+        assert c.get("/api/backups/full").status_code == 401
+        assert c.post("/api/backups/restore", content=b"x", headers={"X-Magi-Restore": "1"}).status_code == 401
+        login(c)
+        c.post("/api/users", json={"username": "tv", "password": "clave-tv-1234", "role": "viewer"})
+        with TestClient(app) as v:
+            login(v, "tv", "clave-tv-1234")
+            assert v.get("/api/backups/full").status_code == 403
+            assert v.post("/api/backups/restore", content=b"x", headers={"X-Magi-Restore": "1"}).status_code == 403
+
+
+def test_restore_rejects_a_db_without_admin_user(tmp_path):
+    import sqlite3 as sq
+    app, _ = _client_app(tmp_path, "a")
+    with TestClient(app) as c:
+        login(c)
+        made = c.post("/api/backups/db").json()
+        gz = c.get("/api/backups/download", params={"kind": "db", "name": made["name"]}).content
+        p = tmp_path / "x.db"
+        p.write_bytes(gzip.decompress(gz))
+        con = sq.connect(p)
+        con.execute("DELETE FROM users")
+        con.commit(); con.close()
+        r = c.post("/api/backups/restore", content=p.read_bytes(), headers={"X-Magi-Restore": "1"})
+        assert r.status_code == 400 and "administrador" in r.json()["detail"]
+        login(c)          # la base actual sigue intacta

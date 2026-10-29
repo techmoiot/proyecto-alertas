@@ -4,20 +4,26 @@ import hashlib
 import hmac
 import ipaddress
 import logging
+import os
 import re
 import secrets
+import signal
+import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
+from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .backup import BackupError, BackupManager
+from .backup import MAX_RESTORE_BYTES, BackupError, BackupManager
 from .config import Config, load
 from .db import DB, DEFAULT_SETTINGS
 from .demo import DemoClient, apply_demo
@@ -185,7 +191,7 @@ def create_app(
     topology = Topology(db, engine, pppoe)
     remote = WGManager(db, cfg)
     backup_dir = cfg.backup_dir or (str(Path(cfg.db_path).parent / "backups") if cfg.db_path != ":memory:" else "")
-    backup = BackupManager(db, backup_dir or None)
+    backup = BackupManager(db, backup_dir or None, wg_state_dir=cfg.wg_state_dir)
     if client_factory is None:
         client_factory = DemoClient if cfg.demo else RouterClient
     poller = Poller(db, engine, client_factory, pppoe, topology, remote, backup)
@@ -214,6 +220,7 @@ def create_app(
     app.state.pppoe, app.state.syslog, app.state.topology = pppoe, syslog, topology
     app.state.remote = remote
     app.state.backup = backup
+    app.state.restart = lambda: os.kill(os.getpid(), signal.SIGTERM)   # systemd lo vuelve a levantar
     app.state.cfg, app.state.notifier = cfg, notifier
 
     basic = HTTPBasic(auto_error=False)
@@ -796,6 +803,44 @@ def create_app(
             raise HTTPException(404, "Archivo no encontrado")
         return FileResponse(path, filename=path.name, media_type="application/octet-stream",
                             headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/backups/full", dependencies=[Depends(admin)])
+    def backups_full():
+        """Respaldo completo para migrar a otro servidor: base de MAGI + clave del túnel."""
+        try:
+            path = backup.make_bundle()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"No se pudo armar el respaldo: {type(exc).__name__}: {exc}") from None
+        name = "magi-completo-" + time.strftime("%Y%m%d-%H%M%S", time.localtime()) + ".tar.gz"
+        return FileResponse(path, filename=name, media_type="application/gzip",
+                            headers={"Cache-Control": "no-store"}, background=BackgroundTask(path.unlink, missing_ok=True))
+
+    @app.post("/api/backups/restore", dependencies=[Depends(admin)])
+    async def backups_restore(request: Request, tasks: BackgroundTasks):
+        """Reemplaza todo por el contenido de un respaldo subido. El cuerpo es el archivo tal cual."""
+        if request.headers.get("x-magi-restore") != "1":
+            raise HTTPException(400, "Falta la cabecera de confirmación")
+        fd, name = tempfile.mkstemp(prefix="magi-upload-")
+        tmp = Path(name)
+        try:
+            size = 0
+            with os.fdopen(fd, "wb") as fh:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_RESTORE_BYTES:
+                        raise HTTPException(413, "El archivo es demasiado grande")
+                    fh.write(chunk)
+            if size == 0:
+                raise HTTPException(400, "No llegó ningún archivo")
+            try:
+                result = await run_in_threadpool(backup.restore_bundle, tmp)
+            except BackupError as exc:
+                raise HTTPException(400, str(exc)) from None
+        finally:
+            tmp.unlink(missing_ok=True)
+        remote.write_files()          # rearma la lista de peers del túnel con la base restaurada
+        tasks.add_task(lambda: threading.Timer(1.0, app.state.restart).start())
+        return {**result, "restarting": True}
 
     # --------------------------------------------------- OLT / PON / mapa de red
 

@@ -302,6 +302,12 @@ En **Configuración → Respaldos**:
   `/var/lib/mk-monitor/backups/db/`; se conservan las últimas 14. Botón «Respaldar ahora» y descarga. Cada copia contiene
   contraseñas de routers y claves del túnel: guardala en un lugar seguro. Restaurar, en el servidor y como root:
   `magi-restore /ruta/magi-AAAAMMDD-HHMMSS.db.gz` (detiene MAGI, guarda la base actual y restaura).
+- **Migrar a otro servidor** (Configuración → Respaldos → «Respaldo completo»): se descarga un `.tar.gz` con la base
+  y la clave del túnel WireGuard. En la instalación nueva (`./install.sh`) se entra con el usuario inicial y se sube
+  ese archivo en «Restaurar desde archivo». MAGI guarda antes la base que tenía, reemplaza todo y se reinicia; después
+  se entra con los usuarios del respaldo. El archivo contiene contraseñas de routers y claves: guardarlo en un lugar seguro.
+  Si el servidor nuevo tiene otra IP pública, hay que actualizar el endpoint del túnel y volver a pegar el script en
+  los routers remotos; con la misma IP/dominio se reconectan solos.
 - **Configuración de los MikroTik (opcional, por router):** `/export terse` por **SSH**. Solo se guarda una versión nueva si la
   configuración cambió; se conservan las últimas 30 versiones de cada router. Requiere el servicio SSH accesible desde el
   servidor y que el usuario del router tenga el permiso `ssh`:

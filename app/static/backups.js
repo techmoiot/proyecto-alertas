@@ -47,7 +47,20 @@ async function renderBackups() {
       })
       .join("");
     box.innerHTML = `
-      <h3 style="margin-top:0">Base de MAGI</h3>
+      <h3 style="margin-top:0">Migrar o reinstalar (respaldo completo)</h3>
+      <p class="muted" style="margin-top:0">Un solo archivo con todo lo de MAGI —usuarios, routers, OLT, alertas, historial, ajustes— y la clave del túnel WireGuard,
+        para que los routers remotos se reconecten solos. Para pasarlo a otro servidor: descargalo acá, instalá MAGI en el nuevo, entrá con el usuario inicial y restauralo desde esta misma pantalla.
+        <b>Contiene contraseñas y claves: guardalo en un lugar seguro.</b></p>
+      <div class="row" style="margin-bottom:.6rem;align-items:center">
+        <a class="btn" href="/api/backups/full" download>Descargar respaldo completo</a>
+      </div>
+      <div class="row" style="margin-bottom:1.2rem;align-items:center">
+        <input type="file" id="bkFile" accept=".gz,.tgz,.db,.tar">
+        <button class="danger" id="bkRestore">Restaurar desde archivo…</button>
+        <span class="muted" id="bkRestoreMsg"></span>
+      </div>
+
+      <h3>Base de MAGI</h3>
       <p class="muted" style="margin-top:0">Usuarios, routers, OLT, alertas e historial. Se respalda sola cada ${""}<span id="bkEvery"></span> h y se guardan las últimas copias en <code>${esc(b.dir)}</code>.
         <b>Cada copia contiene contraseñas de routers y claves del túnel</b>: guardala en un lugar seguro.</p>
       ${b.db_error ? `<p class="router-err">${esc(b.db_error)}</p>` : ""}
@@ -85,6 +98,29 @@ document.addEventListener("click", async (ev) => {
   const t = ev.target.closest("button");
   if (!t) return;
   try {
+    if (t.id === "bkRestore") {
+      const f = $("#bkFile").files[0];
+      if (!f) { toast("Elegí primero el archivo del respaldo", true); return; }
+      if (!confirm(`Se va a REEMPLAZAR todo lo de este MAGI (usuarios, routers, OLT, historial) por el contenido de «${f.name}».\n\nLa base actual queda guardada como copia de seguridad en el servidor. Después de restaurar tenés que entrar con los usuarios del respaldo.\n\n¿Continuar?`)) return;
+      t.disabled = true;
+      const msg = $("#bkRestoreMsg");
+      msg.textContent = "Subiendo y restaurando…";
+      const res = await fetch("/api/backups/restore", { method: "POST", body: f, headers: { "X-Magi-Restore": "1", "Content-Type": "application/octet-stream" } });
+      let j = {};
+      try { j = await res.json(); } catch (_) { /* sin cuerpo */ }
+      if (!res.ok) { t.disabled = false; msg.textContent = ""; throw new Error(j.detail || res.statusText); }
+      msg.textContent = "Restaurado. Reiniciando MAGI…";
+      // espera a que el servicio vuelva y manda a iniciar sesión (los usuarios ahora son los del respaldo)
+      const wait = async () => {
+        for (let i = 0; i < 60; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          try { const r = await fetch("/login", { cache: "no-store" }); if (r.ok) { window.location.href = "/login"; return; } } catch (_) { /* aún reiniciando */ }
+        }
+        msg.textContent = "Restaurado. Recargá la página en un momento.";
+      };
+      wait();
+      return;
+    }
     if (t.id === "bkDbNow") {
       t.disabled = true;
       await api("/api/backups/db", { method: "POST" });

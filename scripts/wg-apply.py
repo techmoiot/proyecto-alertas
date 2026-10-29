@@ -74,7 +74,54 @@ def parse_peers(text: str, net: ipaddress.IPv4Network, server_ip: ipaddress.IPv4
     return peers
 
 
+def import_server_key() -> None:
+    """Si el panel dejó una clave del túnel (restauración de un respaldo), se valida e instala."""
+    src = STATE_DIR / "server.key.import"
+    if not src.exists() and not src.is_symlink():
+        return
+    try:
+        key = safe_read(src, 200).strip()
+        if KEY_RE.match(key) and len(base64.b64decode(key)) == 32:
+            WG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = WG_DIR / "server.key.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(key + "\n")
+            os.replace(tmp, WG_DIR / "server.key")
+            pub = subprocess.run(["wg", "pubkey"], input=key, capture_output=True, text=True)
+            if pub.returncode == 0:
+                (WG_DIR / "server.pub").write_text(pub.stdout.strip() + "\n")
+                os.chmod(WG_DIR / "server.pub", 0o644)
+            print("Clave del túnel restaurada desde el respaldo")
+        else:
+            print("La clave del respaldo no es válida; se ignora", file=sys.stderr)
+    except OSError as exc:
+        print(f"No se pudo importar la clave del túnel: {exc}", file=sys.stderr)
+    finally:
+        src.unlink(missing_ok=True)
+
+
+def export_server_key() -> None:
+    """Copia la clave del túnel donde la aplicación pueda incluirla en el respaldo completo."""
+    try:
+        key = (WG_DIR / "server.key").read_text().strip()
+        dst = STATE_DIR / "server.key.export"
+        if dst.exists() and not dst.is_symlink() and dst.read_text().strip() == key:
+            return
+        st = STATE_DIR.stat()
+        tmp = STATE_DIR / ".server.key.export.tmp"
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(key + "\n")
+        os.chown(tmp, st.st_uid, st.st_gid)
+        os.replace(tmp, dst)
+    except OSError:
+        pass
+
+
 def main() -> int:
+    import_server_key()
     env = read_env()
     net = ipaddress.ip_network(env.get("MKMON_WG_NETWORK", "10.77.0.0/24"))
     port = int(env.get("MKMON_WG_PORT", "51821"))
@@ -116,6 +163,8 @@ def main() -> int:
         if strip.returncode == 0:
             subprocess.run(["wg", "syncconf", IFACE, "/dev/stdin"], input=strip.stdout, text=True,
                            capture_output=True)
+
+    export_server_key()
 
     # Estado para el panel: último handshake de cada peer (lectura pública, sin claves privadas)
     RUN_DIR.mkdir(parents=True, exist_ok=True)

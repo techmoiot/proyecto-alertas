@@ -15,13 +15,19 @@ import gzip
 import hashlib
 import logging
 import os
+import io
+import json
 import re
 import shutil
 import sqlite3
+import tarfile
+import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+from .db import SCHEMA  # noqa: E402
 
 log = logging.getLogger("mkmonitor.backup")
 
@@ -29,6 +35,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 RETRY_AFTER_ERROR_S = 3600
 SSH_TIMEOUT_S = 60
 MAX_EXPORT_BYTES = 20 * 1024 * 1024
+MAX_RESTORE_BYTES = 2 * 1024 ** 3
+WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+REQUIRED_TABLES = {"routers", "settings", "users", "alerts"}
 
 
 class BackupError(Exception):
@@ -116,8 +125,9 @@ def ssh_export(db, router: dict, timeout: float = SSH_TIMEOUT_S) -> str:
 
 class BackupManager:
     def __init__(self, db, base_dir: str | Path | None, exporter: Callable | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, wg_state_dir: str | Path | None = None):
         self.db = db
+        self.wg_state_dir = Path(wg_state_dir) if wg_state_dir else None
         self.base = Path(base_dir) if base_dir else None
         self.exporter = exporter or (lambda router: ssh_export(self.db, router))
         self.clock = clock
@@ -315,6 +325,128 @@ class BackupManager:
         else:
             return None
         return p if p.is_file() and p.resolve().parent == p.parent.resolve() else None
+
+    # ------------------------------------------------- respaldo completo / restauración
+
+    def _wg_key(self) -> str:
+        """Clave privada del túnel WireGuard (la deja ahí el ayudante root); '' si no está."""
+        if not self.wg_state_dir:
+            return ""
+        try:
+            key = (self.wg_state_dir / "server.key.export").read_text().strip()
+        except OSError:
+            return ""
+        return key if WG_KEY_RE.match(key) else ""
+
+    def make_bundle(self) -> Path:
+        """Archivo .tar.gz con la base completa + la clave del túnel. Quien lo pide debe borrarlo."""
+        fd, name = tempfile.mkstemp(prefix="magi-completo-", suffix=".tar.gz")
+        os.close(fd)
+        out = Path(name)
+        tmpdb = Path(name + ".db")
+        try:
+            dst = sqlite3.connect(tmpdb)
+            try:
+                with self.db._lock:
+                    self.db._conn.backup(dst)
+            finally:
+                dst.close()
+            key = self._wg_key()
+            manifest = json.dumps({"app": "magi", "version": 1, "created": self.clock(), "wg_key": bool(key)}).encode()
+            with tarfile.open(out, "w:gz", compresslevel=6) as tar:
+                tar.add(tmpdb, arcname="mkmonitor.db")
+                for arc, data in (("manifest.json", manifest), ("server.key", key.encode() if key else b"")):
+                    if not data:
+                        continue
+                    info = tarfile.TarInfo(arc)
+                    info.size, info.mtime, info.mode = len(data), int(self.clock()), 0o600
+                    tar.addfile(info, io.BytesIO(data))
+            os.chmod(out, 0o600)
+            return out
+        except Exception:
+            out.unlink(missing_ok=True)
+            raise
+        finally:
+            tmpdb.unlink(missing_ok=True)
+
+    @staticmethod
+    def _unpack(path: Path, workdir: Path) -> tuple[Path, str]:
+        """Saca de un archivo subido la base (y la clave del túnel si viene). Acepta el respaldo completo
+        (.tar.gz), una copia de la base (.db.gz) o la base sola (.db). No extrae nada por nombre."""
+        with open(path, "rb") as fh:
+            head = fh.read(512)
+        dbfile, key = workdir / "restore.db", ""
+        if head.startswith(b"SQLite format 3"):
+            shutil.copyfile(path, dbfile)
+        elif head[:2] == b"\x1f\x8b":
+            try:
+                with tarfile.open(path, "r:gz") as tar:
+                    names = {m.name: m for m in tar.getmembers() if m.isfile()}
+                    if "mkmonitor.db" not in names:
+                        raise tarfile.ReadError("sin base")
+                    with tar.extractfile(names["mkmonitor.db"]) as src, open(dbfile, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    if "server.key" in names and names["server.key"].size <= 200:
+                        with tar.extractfile(names["server.key"]) as src:
+                            key = src.read().decode("ascii", "ignore").strip()
+            except tarfile.TarError:
+                # no es un tar: probablemente un .db.gz suelto
+                try:
+                    with gzip.open(path, "rb") as src, open(dbfile, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                except OSError:
+                    raise BackupError("El archivo no es un respaldo de MAGI válido.") from None
+            except (OSError, EOFError):
+                raise BackupError("El archivo está dañado o incompleto.") from None
+        else:
+            raise BackupError("El archivo no es un respaldo de MAGI válido.")
+        return dbfile, key if WG_KEY_RE.match(key) else ""
+
+    def restore_bundle(self, path: Path) -> dict:
+        """Reemplaza TODA la base en uso por la del archivo. Guarda antes una copia de la actual."""
+        with tempfile.TemporaryDirectory(prefix="magi-restore-") as td:
+            dbfile, key = self._unpack(Path(path), Path(td))
+            try:
+                src = sqlite3.connect(f"file:{dbfile}?mode=ro", uri=True)
+            except sqlite3.Error:
+                raise BackupError("El archivo no es una base de datos de MAGI válida.") from None
+            try:
+                try:
+                    if src.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                        raise BackupError("La base del respaldo está dañada.")
+                    tables = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                except sqlite3.DatabaseError:
+                    raise BackupError("El archivo no es una base de datos de MAGI válida.") from None
+                if not REQUIRED_TABLES <= tables:
+                    raise BackupError("El archivo no parece una base de MAGI (faltan tablas).")
+                if src.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0] < 1:
+                    raise BackupError("El respaldo no tiene ningún usuario administrador.")
+                if self.enabled:
+                    try:
+                        self.backup_db()          # red de seguridad: la base actual queda en backups/db
+                    except Exception as exc:      # noqa: BLE001
+                        raise BackupError(f"No se pudo guardar la copia de seguridad previa: {exc}") from None
+                with self.db._lock:
+                    src.backup(self.db._conn)
+                    self.db._conn.executescript(SCHEMA)
+                    self.db._migrate()
+            finally:
+                src.close()
+        wrote_key = False
+        if key and self.wg_state_dir:
+            try:
+                tmp = self.wg_state_dir / ".server.key.import.tmp"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(key + "\n")
+                os.replace(tmp, self.wg_state_dir / "server.key.import")
+                wrote_key = True
+            except OSError as exc:
+                log.warning("No se pudo dejar la clave del túnel para importar: %s", exc)
+        self._errors.clear()
+        self._router_checked.clear()
+        log.warning("Base restaurada desde un respaldo subido (clave del túnel: %s)", "sí" if wrote_key else "no")
+        return {"ok": True, "wg_key": wrote_key, "had_wg_key": bool(key)}
 
     def forget_host_key(self, router_id: int) -> None:
         self.db.execute("DELETE FROM settings WHERE key=?", (f"sshkey:{router_id}",))
