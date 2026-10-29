@@ -679,11 +679,17 @@ function netRenderSummary() {
         .map((p) => `<button class="netsector" data-netpon="${p.id}">🔴 ${esc(p.label || p.name)}${p.vlan ? " · VLAN " + p.vlan : ""} — sector caído: ${p.down}/${p.total} (${p.pct}%)</button>`)
         .join("")}${bad.length > 8 ? `<span class="muted">y ${bad.length - 8} más</span>` : ""}</div>`
     : "";
-  const sel = $("#netOlt");
-  if (d.olts.length > 1) {
-    sel.hidden = false;
-    sel.innerHTML = d.olts.map((o) => `<option value="${o.id}" ${o.id === NET.oltId ? "selected" : ""}>${esc(o.name)}</option>`).join("");
-  } else sel.hidden = true;
+  netRenderOlts();
+}
+
+function netRenderOlts() {
+  const d = NET.data, box = $("#netOlts");
+  if (!d || d.olts.length < 2) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.innerHTML = d.olts.map((o) => {
+    const dn = o.pons.filter((p) => p.status === "down").length;
+    return `<button class="${o.id === NET.oltId ? "" : "ghost "}small" data-netolt="${o.id}">${esc(o.name)}${dn ? ` <b style="color:var(--crit,#ff8a82)">⚠ ${dn}</b>` : ""}</button>`;
+  }).join("");
 }
 
 async function renderNetwork() {
@@ -744,12 +750,12 @@ document.addEventListener("click", (ev) => {
   } else if (t.id === "netPanelClose") { NET.selected = null; netRenderPanel(); }
   else if (t.id === "netFocus" && NET.selected) netFocusPon(parseInt(NET.selected.slice(4), 10));
 });
-document.addEventListener("change", (ev) => {
-  if (ev.target.id === "netOlt") {
-    NET.oltId = parseInt(ev.target.value, 10);
-    NET.nodes = []; NET.byId.clear(); NET.selected = null; NET.fitted = false;
-    renderNetwork();
-  }
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest && ev.target.closest("[data-netolt]");
+  if (!b) return;
+  NET.oltId = parseInt(b.dataset.netolt, 10);
+  NET.nodes = []; NET.byId.clear(); NET.selected = null; NET.fitted = false;
+  renderNetwork();
 });
 document.addEventListener("fullscreenchange", () => setTimeout(() => { netResize(); netFit(); }, 100));
 
@@ -775,6 +781,18 @@ function splitPool(cidr) {
   const size = 2 ** (32 - len);
   const net = base - (base % size);
   return [`${intToIp(net)}/${len + 1}`, `${intToIp(net + size / 2)}/${len + 1}`];
+}
+
+/* Red de TV a partir de la de Internet: la siguiente del mismo tamaño (10.2.20.0/25 → 10.2.20.128/25). */
+function nextPool(cidr) {
+  const m = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec((cidr || "").trim());
+  if (!m) return null;
+  const base = ipToInt(m[1]), len = parseInt(m[2], 10);
+  if (base === null || len < 9 || len > 30) return null;
+  const size = 2 ** (32 - len);
+  const net = base - (base % size);
+  const nxt = (net + size) % 2 ** 32;
+  return nxt === 0 ? null : `${intToIp(nxt)}/${len}`;
 }
 
 /* Genera tarjetas × puertos PON. Con varias tarjetas los PON se llaman «PON tarjeta/puerto». */
@@ -872,6 +890,18 @@ document.addEventListener("input", (ev) => {
   } else if (el.dataset && el.dataset.pon !== undefined) {
     const p = OLT_EDIT.pons[parseInt(el.dataset.pon, 10)];
     if (p) p[el.dataset.k] = el.dataset.k === "vlan" || el.dataset.k === "card" ? parseInt(el.value, 10) || (el.dataset.k === "card" ? 1 : 0) : el.value;
+    // Al escribir la red de Internet, la de TV se rellena sola (sigue siendo editable).
+    if (p && el.dataset.k === "inet_cidr") {
+      const tvEl = el.closest("tr").querySelector('[data-k="tv_cidr"]');
+      const auto = nextPool(el.value);
+      if (tvEl && auto && (!p.tv_cidr || p.tv_cidr === p._tvAuto)) {
+        p.tv_cidr = p._tvAuto = auto;
+        tvEl.value = auto;
+      } else if (auto === null && p._tvAuto && p.tv_cidr === p._tvAuto) {
+        p.tv_cidr = p._tvAuto = "";
+        if (tvEl) tvEl.value = "";
+      }
+    }
   }
 });
 
@@ -955,7 +985,7 @@ document.addEventListener("click", async (ev) => {
       OLT_EDIT = null;
       oltRenderForm();
     } else if (t.id === "oltSave") {
-      const body = { name: OLT_EDIT.name.trim(), cards: OLT_EDIT.cards, ports_per_card: OLT_EDIT.ppc, pons: OLT_EDIT.pons };
+      const body = { name: OLT_EDIT.name.trim(), cards: OLT_EDIT.cards, ports_per_card: OLT_EDIT.ppc, pons: OLT_EDIT.pons.map(({ _tvAuto, ...q }) => q) };
       if (OLT_EDIT.id) await api(`/api/olts/${OLT_EDIT.id}`, { method: "PUT", body });
       else await api("/api/olts", { method: "POST", body });
       OLT_EDIT = null;
