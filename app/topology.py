@@ -163,7 +163,8 @@ class Topology:
         self.pppoe = pppoe
         self.clock = clock
         self._lock = threading.RLock()
-        self._index: tuple[list[int], list[tuple[int, int, int, int]]] | None = None
+        # router_id (0 = OLT sin router asignado, vale para cualquiera) -> (inicios, tramos); None = todo junto
+        self._index: dict[int | None, tuple[list[int], list[tuple[int, int, int, int]]]] | None = None
         # pon_id -> {"bad_since", "good_since", "active"}
         self._track: dict[int, dict[str, Any]] = {}
         self._load_alerts()
@@ -172,29 +173,32 @@ class Topology:
 
     def olts(self) -> list[dict]:
         out = []
-        for o in self.db.query("SELECT id, name, cards, ports_per_card FROM olts ORDER BY name"):
+        for o in self.db.query("SELECT id, name, cards, ports_per_card, router_id FROM olts ORDER BY name"):
             pons = self.db.query(
                 "SELECT id, name, vlan, card, inet_cidr, tv_cidr FROM pons WHERE olt_id=? ORDER BY pos, id",
                 (o["id"],),
             )
             out.append({"id": o["id"], "name": o["name"], "cards": o["cards"],
-                        "ports_per_card": o["ports_per_card"], "pons": pons})
+                        "ports_per_card": o["ports_per_card"], "router_id": o["router_id"], "pons": pons})
         return out
 
     def save_olt(self, name: str, pons: list[dict], olt_id: int | None = None,
-                 cards: int = 1, ports_per_card: int = 0) -> int:
+                 cards: int = 1, ports_per_card: int = 0, router_id: int = 0) -> int:
         name = (name or "").strip()[:40]
         if not name:
             raise ConfigError("Poné un nombre para la OLT")
         cards, ports_per_card = validate_layout(cards, ports_per_card)
         pons = validate_pons(pons, cards, ports_per_card)
+        if router_id and not self.db.query("SELECT 1 FROM routers WHERE id=?", (router_id,)):
+            raise ConfigError("El router elegido no existe")
         dup = self.db.query("SELECT id FROM olts WHERE lower(name)=lower(?)", (name,))
         if dup and dup[0]["id"] != olt_id:
             raise ConfigError(f"Ya existe una OLT llamada «{name}»")
-        # Los pools de esta OLT no pueden pisar los de otras.
+        # Los pools no pueden pisarse con los de otra OLT del MISMO router (o de una sin router asignado).
+        # Entre routers distintos sí pueden repetirse VLAN y redes: cada OLT solo mira a su router.
         mine = [(ipaddress.ip_network(c), p["name"]) for p in pons for c in (p["inet_cidr"], p["tv_cidr"]) if c]
         for o in self.olts():
-            if o["id"] == olt_id:
+            if o["id"] == olt_id or (o["router_id"] and router_id and o["router_id"] != router_id):
                 continue
             for p in o["pons"]:
                 for c in (p["inet_cidr"], p["tv_cidr"]):
@@ -209,13 +213,13 @@ class Topology:
         with self._lock:
             if olt_id is None:
                 olt_id = self.db.execute(
-                    "INSERT INTO olts(name, cards, ports_per_card) VALUES(?,?,?)", (name, cards, ports_per_card)
+                    "INSERT INTO olts(name, cards, ports_per_card, router_id) VALUES(?,?,?,?)", (name, cards, ports_per_card, router_id)
                 ).lastrowid
             else:
                 if not self.db.query("SELECT 1 FROM olts WHERE id=?", (olt_id,)):
                     raise KeyError(olt_id)
-                self.db.execute("UPDATE olts SET name=?, cards=?, ports_per_card=? WHERE id=?",
-                                (name, cards, ports_per_card, olt_id))
+                self.db.execute("UPDATE olts SET name=?, cards=?, ports_per_card=?, router_id=? WHERE id=?",
+                                (name, cards, ports_per_card, router_id, olt_id))
                 self._drop_olt_state(olt_id)
                 self.db.execute("DELETE FROM pons WHERE olt_id=?", (olt_id,))
             self.db.executemany(
@@ -250,33 +254,39 @@ class Topology:
     # ------------------------------------------------------------- asignación
 
     def _build_index(self):
-        starts, spans = [], []
-        rows = []
+        groups: dict[int | None, list] = {}
         for o in self.olts():
             for p in o["pons"]:
                 for pool, cidr in ((0, p["inet_cidr"]), (1, p["tv_cidr"])):
                     if cidr:
                         net = ipaddress.ip_network(cidr)
-                        rows.append((int(net.network_address), int(net.broadcast_address), p["id"], pool))
-        rows.sort()
-        for a, b, pid, pool in rows:
-            starts.append(a)
-            spans.append((a, b, pid, pool))
-        return starts, spans
+                        row = (int(net.network_address), int(net.broadcast_address), p["id"], pool)
+                        groups.setdefault(o["router_id"], []).append(row)
+                        groups.setdefault(None, []).append(row)
+        out = {}
+        for key, rows in groups.items():
+            rows.sort()
+            out[key] = ([r[0] for r in rows], rows)
+        return out
 
-    def locate(self, ip: str) -> tuple[int, int] | None:
-        """(pon_id, pool) al que pertenece una IP, o None."""
+    def locate(self, ip: str, router_id: int | None = None) -> tuple[int, int] | None:
+        """(pon_id, pool) al que pertenece una IP, o None.
+
+        Con `router_id` solo se miran las OLT de ese router (y las que no tienen router asignado):
+        así una misma VLAN o red usada en otro router no se confunde. Sin él se mira todo junto."""
         with self._lock:
             if self._index is None:
                 self._index = self._build_index()
-            starts, spans = self._index
+            index = self._index
         try:
             n = int(ipaddress.IPv4Address(ip))
         except ValueError:
             return None
-        i = bisect.bisect_right(starts, n) - 1
-        if i >= 0 and spans[i][0] <= n <= spans[i][1]:
-            return spans[i][2], spans[i][3]
+        for key in ((None,) if router_id is None else (router_id, 0)):
+            starts, spans = index.get(key, ([], []))
+            i = bisect.bisect_right(starts, n) - 1
+            if i >= 0 and spans[i][0] <= n <= spans[i][1]:
+                return spans[i][2], spans[i][3]
         return None
 
     # --------------------------------------------------------------- instantánea
@@ -290,7 +300,7 @@ class Topology:
         buckets: dict[int, list[list[list]]] = {}
         unassigned = 0
         for rid, se, status in self.pppoe.all_sessions():
-            loc = self.locate(se.address) if se.address else None
+            loc = self.locate(se.address, rid) if se.address else None
             if loc is None:
                 unassigned += 1
                 continue
@@ -326,7 +336,8 @@ class Topology:
                     "status": self._status(m, p["id"], settings),
                 })
             out.append({"id": o["id"], "name": o["name"], "cards": o["cards"],
-                        "ports_per_card": o["ports_per_card"], "pons": pons})
+                        "ports_per_card": o["ports_per_card"], "router_id": o["router_id"],
+                        "router": names.get(o["router_id"], "" if not o["router_id"] else "(eliminado)"), "pons": pons})
         return {"now": now, "olts": out, "unassigned": unassigned}
 
     @staticmethod

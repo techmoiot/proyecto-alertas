@@ -325,3 +325,26 @@ def test_duplicate_names_get_unique_labels_alerts_and_restore(db, engine, mon, r
     topo2 = Topology(db, Engine(db), PPPoEMonitor(db, Engine(db)))
     flags = {p["label"]: p["alert"] for p in topo2.snapshot(T0 + 70)["olts"][0]["pons"]}
     assert flags == {"PON 1 (T1)": False, "PON 2 (T1)": False, "PON 1 (T2)": True, "PON 2 (T2)": False}
+
+
+def test_same_vlan_and_pools_on_different_routers_do_not_clash(db, engine, mon):
+    now = T0
+    r1 = db.execute("INSERT INTO routers(name, host, port, username, password, updated_at) VALUES('R1','1.1.1.1',8728,'u','p',?)", (now,)).lastrowid
+    r2 = db.execute("INSERT INTO routers(name, host, port, username, password, updated_at) VALUES('R2','2.2.2.2',8728,'u','p',?)", (now,)).lastrowid
+    t = Topology(db, engine, mon)
+    t.save_olt("OLT-R1", pons2(), router_id=r1)
+    t.save_olt("OLT-R2", pons2(), router_id=r2)                     # mismas VLAN y redes, otro router: permitido
+    with pytest.raises(ConfigError):
+        t.save_olt("OLT-R1b", pons2(), router_id=r1)                # mismo router: se pisan
+    with pytest.raises(ConfigError):
+        t.save_olt("OLT-X", pons2(), router_id=999)                 # router inexistente
+    by_name = {o["name"]: o for o in t.olts()}
+    p1, p2 = by_name["OLT-R1"]["pons"][0]["id"], by_name["OLT-R2"]["pons"][0]["id"]
+    assert t.locate("10.1.0.5", r1) == (p1, 0) and t.locate("10.1.0.5", r2) == (p2, 0)
+    assert t.locate("10.1.0.5", 12345) is None                      # otro router sin OLT: no se mezcla
+    mon.process_active({"id": r1, "name": "R1", "host": "1.1.1.1"}, rows({"a": "10.1.0.5", "b": "10.1.0.6"}), now)
+    mon.process_active({"id": r2, "name": "R2", "host": "2.2.2.2"}, rows({"c": "10.1.0.5"}), now)
+    snap = {o["name"]: o for o in t.snapshot(now)["olts"]}
+    assert snap["OLT-R1"]["router"] == "R1" and snap["OLT-R2"]["router"] == "R2"
+    assert snap["OLT-R1"]["pons"][0]["total"] == 2
+    assert snap["OLT-R2"]["pons"][0]["total"] == 1

@@ -141,6 +141,7 @@ MIGRATIONS = [
     ("routers", "ssh_port", "INTEGER NOT NULL DEFAULT 22"),
     ("olts", "cards", "INTEGER NOT NULL DEFAULT 1"),
     ("olts", "ports_per_card", "INTEGER NOT NULL DEFAULT 0"),
+    ("olts", "router_id", "INTEGER NOT NULL DEFAULT 0"),
     ("pons", "card", "INTEGER NOT NULL DEFAULT 1"),
 ]
 

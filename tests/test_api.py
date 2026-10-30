@@ -456,8 +456,8 @@ def test_old_database_is_migrated_without_losing_routers(tmp_path):
 # ------------------------------------------------------------------ OLT / red
 
 
-def olt_body(name="OLT-1", n=2):
-    return {"name": name, "pons": [{"name": f"PON {i}", "vlan": 100 + i, "inet_cidr": f"10.{i}.0.0/25",
+def olt_body(name="OLT-1", n=2, rid=0):
+    return {"name": name, "router_id": rid, "pons": [{"name": f"PON {i}", "vlan": 100 + i, "inet_cidr": f"10.{i}.0.0/25",
                                     "tv_cidr": f"10.{i}.0.128/25"} for i in range(1, n + 1)]}
 
 
@@ -468,17 +468,20 @@ def test_olt_endpoints_require_login_and_admin(app):
 
 
 def test_olt_crud_validation_and_network_snapshot(client, app):
-    r = client.post("/api/olts", json=olt_body())
+    rid = add_router(client)
+    assert client.post("/api/olts", json=olt_body()).status_code == 400            # sin router
+    assert client.post("/api/olts", json=olt_body(rid=999)).status_code == 400     # router inexistente
+    r = client.post("/api/olts", json=olt_body(rid=rid))
     assert r.status_code == 200, r.text
     oid = r.json()["id"]
-    assert client.post("/api/olts", json=olt_body()).status_code == 400            # nombre repetido
-    bad = olt_body("OLT-2")
+    assert client.post("/api/olts", json=olt_body(rid=rid)).status_code == 400     # nombre repetido
+    bad = olt_body("OLT-2", rid=rid)
     bad["pons"][0]["inet_cidr"] = "10.1.0/25"
     assert "red válida" in client.post("/api/olts", json=bad).json()["detail"]
     assert client.post("/api/olts", json={"name": "x", "pons": []}).status_code == 422
     assert len(client.get("/api/olts").json()[0]["pons"]) == 2
+    assert client.get("/api/olts").json()[0]["router_id"] == rid
 
-    rid = add_router(client)
     router = {"id": rid, "name": "Core", "host": "10.0.0.1"}
     t = time.time()
     rows = [{"name": f"c{i}", "service": "pppoe", "address": f"10.1.0.{i}", "caller-id": "", "uptime": "1h"}
@@ -495,10 +498,10 @@ def test_olt_crud_validation_and_network_snapshot(client, app):
     sector = [a for a in alerts if a["kind"] == "pon_down"]
     assert sector and sector[0]["router"] == "OLT" and "Sector caído" in sector[0]["message"]
 
-    upd = olt_body("OLT-1", 3)
+    upd = olt_body("OLT-1", 3, rid)
     assert client.put(f"/api/olts/{oid}", json=upd).status_code == 200
     assert len(client.get("/api/olts").json()[0]["pons"]) == 3
-    assert client.put("/api/olts/999", json=olt_body("zz")).status_code in (400, 404)
+    assert client.put("/api/olts/999", json=olt_body("zz", rid=rid)).status_code in (400, 404)
     assert client.delete(f"/api/olts/{oid}").status_code == 200
     assert client.delete(f"/api/olts/{oid}").status_code == 404
     assert client.get("/api/network").json()["olts"] == []

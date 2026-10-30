@@ -666,6 +666,7 @@ function netRenderSummary() {
   }
   const chip = (cls, text) => `<span class="chip ${cls}">${text}</span>`;
   sum.innerHTML =
+    (olt.router ? chip("", `Router: ${esc(olt.router)}`) : chip("warn", "Sin router asignado")) +
     chip("", `${olt.pons.length} PON`) +
     chip("ok", `${total - down} en línea`) +
     chip(down ? "warn" : "", `${down} caídos`) +
@@ -817,10 +818,10 @@ async function renderOltConfig() {
     const [olts, routers] = await Promise.all([api("/api/olts"), api("/api/routers")]);
     OLT_ROUTERS = routers;
     const list = olts.length
-      ? `<table><thead><tr><th>OLT</th><th>Tarjetas</th><th>PON</th><th>VLAN</th><th></th></tr></thead><tbody>${olts
+      ? `<table><thead><tr><th>OLT</th><th>Router</th><th>Tarjetas</th><th>PON</th><th>VLAN</th><th></th></tr></thead><tbody>${olts
           .map((o) => {
             const v = o.pons.map((p) => p.vlan).filter(Boolean);
-            return `<tr><td><b>${esc(o.name)}</b></td><td>${o.cards}${o.ports_per_card ? ` × ${o.ports_per_card} puertos` : ""}</td><td>${o.pons.length}</td>
+            return `<tr><td><b>${esc(o.name)}</b></td><td>${o.router_id ? esc((routers.find((r) => r.id === o.router_id) || {}).name || "(eliminado)") : '<span class="router-err">sin asignar</span>'}</td><td>${o.cards}${o.ports_per_card ? ` × ${o.ports_per_card} puertos` : ""}</td><td>${o.pons.length}</td>
               <td>${v.length ? Math.min(...v) + "–" + Math.max(...v) : "—"}</td>
               <td class="row"><button class="ghost small" data-oltedit="${o.id}">Editar</button>
               <button class="danger small" data-oltdel="${o.id}">Eliminar</button></td></tr>`;
@@ -852,6 +853,9 @@ function oltRenderForm() {
   f.innerHTML = `<h3 style="margin-top:1rem">${OLT_EDIT.id ? "Editar OLT" : "Nueva OLT"}</h3>
     <div class="form-grid">
       <div class="field"><label>Nombre de la OLT</label><input id="olt_name" value="${esc(OLT_EDIT.name)}" placeholder="OLT-Centro" maxlength="40"></div>
+      <div class="field"><label>Router al que está conectada</label><select id="olt_router"><option value="0">— elegí un router —</option>${OLT_ROUTERS
+        .map((r) => `<option value="${r.id}" ${r.id === OLT_EDIT.router_id ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select>
+        <small>Solo se miran los clientes de este router, así las VLAN y redes repetidas en otros routers no se mezclan.</small></div>
       <div class="field"><label>Tarjetas de la OLT</label><input id="olt_cards" type="number" min="1" max="32" value="${OLT_EDIT.cards}"><small>Cuántas tarjetas de PON tiene instaladas.</small></div>
       <div class="field"><label>Puertos PON por tarjeta</label><input id="olt_ppc" type="number" min="1" max="64" value="${OLT_EDIT.ppc}"><small>Típico: 8 o 16. Total: <b id="olt_total">${OLT_EDIT.cards * OLT_EDIT.ppc}</b> PON.</small></div>
       <div class="field"><label>VLAN del primer PON</label><input id="olt_vlan0" type="number" min="1" max="4094" value="101"></div>
@@ -860,10 +864,8 @@ function oltRenderForm() {
     </div>
     ${OLT_ROUTERS.length ? `<div class="card" style="background:var(--panel-2);margin:.8rem 0">
       <b>Detectar desde el MikroTik</b>
-      <p class="muted" style="margin:.2rem 0 .6rem">Lee las interfaces VLAN del router y sus IP, y arma la tabla de abajo. Revisala antes de guardar: no se guarda nada hasta que lo pidas.</p>
+      <p class="muted" style="margin:.2rem 0 .6rem">Lee las interfaces VLAN del router elegido arriba y sus IP, y arma la tabla de abajo. Revisala antes de guardar: no se guarda nada hasta que lo pidas.</p>
       <div class="form-grid">
-        <div class="field"><label>Router</label><select id="olt_router">${OLT_ROUTERS
-          .map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></div>
         <div class="field"><label>Solo VLAN desde</label><input id="olt_vfrom" type="number" min="1" max="4094" placeholder="(todas)"></div>
         <div class="field"><label>hasta</label><input id="olt_vto" type="number" min="1" max="4094" placeholder="(todas)"></div>
       </div>
@@ -882,6 +884,7 @@ document.addEventListener("input", (ev) => {
   const el = ev.target;
   if (!OLT_EDIT) return;
   if (el.id === "olt_name") OLT_EDIT.name = el.value;
+  else if (el.id === "olt_router") OLT_EDIT.router_id = parseInt(el.value, 10) || 0;
   else if (el.id === "olt_cards" || el.id === "olt_ppc") {
     const v = Math.max(1, parseInt(el.value, 10) || 1);
     if (el.id === "olt_cards") OLT_EDIT.cards = Math.min(v, 32); else OLT_EDIT.ppc = Math.min(v, 64);
@@ -917,14 +920,14 @@ document.addEventListener("click", async (ev) => {
   try {
     if (t.id === "oltNew") {
       OLT_INFO = "";
-      OLT_EDIT = { id: null, name: "", cards: 1, ppc: 16, pons: [] };
+      OLT_EDIT = { id: null, name: "", router_id: OLT_ROUTERS.length === 1 ? OLT_ROUTERS[0].id : 0, cards: 1, ppc: 16, pons: [] };
       oltRenderForm();
     } else if (t.dataset.oltedit) {
       const olts = JSON.parse($("#oltBox").dataset.olts || "[]");
       const o = olts.find((x) => x.id === parseInt(t.dataset.oltedit, 10));
       OLT_INFO = "";
       OLT_EDIT = {
-        id: o.id, name: o.name, cards: o.cards || 1,
+        id: o.id, name: o.name, router_id: o.router_id || 0, cards: o.cards || 1,
         ppc: o.ports_per_card || Math.max(1, ...Array.from({ length: o.cards || 1 }, (_, c) => o.pons.filter((p) => (p.card || 1) === c + 1).length)),
         pons: o.pons.map((p) => ({ name: p.name, vlan: p.vlan, card: p.card || 1, inet_cidr: p.inet_cidr, tv_cidr: p.tv_cidr })),
       };
@@ -938,6 +941,7 @@ document.addEventListener("click", async (ev) => {
       renderOltConfig();
     } else if (t.id === "oltDetect") {
       OLT_EDIT.name = $("#olt_name").value;
+      if (!OLT_EDIT.router_id) { toast("Elegí primero el router al que está conectada la OLT", true); return; }
       const body = {};
       const f = parseInt($("#olt_vfrom").value, 10), to = parseInt($("#olt_vto").value, 10);
       if (f) body.vlan_from = f;
@@ -945,7 +949,7 @@ document.addEventListener("click", async (ev) => {
       t.disabled = true;
       $("#oltDetectInfo").textContent = "Leyendo el router…";
       try {
-        const res = await api(`/api/routers/${$("#olt_router").value}/detect-vlans`, { method: "POST", body });
+        const res = await api(`/api/routers/${OLT_EDIT.router_id}/detect-vlans`, { method: "POST", body });
         // Reparte los PON encontrados entre las tarjetas (si no caben, se suman tarjetas).
         const per = OLT_EDIT.ppc;
         if (OLT_EDIT.cards * per < res.pons.length) OLT_EDIT.cards = Math.min(32, Math.ceil(res.pons.length / per));
@@ -985,7 +989,8 @@ document.addEventListener("click", async (ev) => {
       OLT_EDIT = null;
       oltRenderForm();
     } else if (t.id === "oltSave") {
-      const body = { name: OLT_EDIT.name.trim(), cards: OLT_EDIT.cards, ports_per_card: OLT_EDIT.ppc, pons: OLT_EDIT.pons.map(({ _tvAuto, ...q }) => q) };
+      if (!OLT_EDIT.router_id) throw new Error("Elegí el router al que está conectada la OLT");
+      const body = { name: OLT_EDIT.name.trim(), router_id: OLT_EDIT.router_id, cards: OLT_EDIT.cards, ports_per_card: OLT_EDIT.ppc, pons: OLT_EDIT.pons.map(({ _tvAuto, ...q }) => q) };
       if (OLT_EDIT.id) await api(`/api/olts/${OLT_EDIT.id}`, { method: "PUT", body });
       else await api("/api/olts", { method: "POST", body });
       OLT_EDIT = null;

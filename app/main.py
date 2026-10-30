@@ -95,6 +95,7 @@ class OltIn(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     cards: int = Field(1, ge=1, le=32)
     ports_per_card: int = Field(0, ge=0, le=64)
+    router_id: int = Field(0, ge=0)
     pons: list[PonIn] = Field(min_length=1, max_length=128)
 
 
@@ -747,7 +748,7 @@ def create_app(
         per_pon: dict[str, int] = {}
         for r in rows:
             r["router"] = names.get(r["router_id"], "?")
-            loc = topology.locate(r["address"]) if r["address"] else None
+            loc = topology.locate(r["address"], r["router_id"]) if r["address"] else None
             r["pon"] = pons.get(loc[0], "") if loc else ""
             if r["pon"]:
                 per_pon[r["pon"]] = per_pon.get(r["pon"], 0) + 1
@@ -875,9 +876,12 @@ def create_app(
 
     @app.post("/api/olts", dependencies=[Depends(admin)])
     def olts_create(body: OltIn):
+        if not body.router_id:
+            raise HTTPException(400, "Elegí el router al que está conectada la OLT")
         try:
             return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons],
-                                                    cards=body.cards, ports_per_card=body.ports_per_card)}
+                                                    cards=body.cards, ports_per_card=body.ports_per_card,
+                                                    router_id=body.router_id)}
         except ConfigError as exc:
             raise HTTPException(400, str(exc)) from None
 
@@ -904,9 +908,12 @@ def create_app(
 
     @app.put("/api/olts/{oid}", dependencies=[Depends(admin)])
     def olts_update(oid: int, body: OltIn):
+        if not body.router_id:
+            raise HTTPException(400, "Elegí el router al que está conectada la OLT")
         try:
             return {"id": topology.save_olt(body.name, [p.model_dump() for p in body.pons], oid,
-                                                    cards=body.cards, ports_per_card=body.ports_per_card)}
+                                                    cards=body.cards, ports_per_card=body.ports_per_card,
+                                                    router_id=body.router_id)}
         except ConfigError as exc:
             raise HTTPException(400, str(exc)) from None
         except KeyError:
