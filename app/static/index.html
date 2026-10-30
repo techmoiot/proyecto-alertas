@@ -44,6 +44,7 @@
         <label>Router <select id="pppoeRouter"><option value="">todos</option></select></label>
       </div>
       <div id="pppoeSummary" class="grid pppoe-cards"></div>
+      <div id="pppoeScope" class="row" style="margin:.5rem 0 0;align-items:center"></div>
       <div id="pppoeSyslog" class="muted" style="margin:.6rem 0 1.2rem"></div>
 
       <div class="card">
@@ -135,6 +136,10 @@
             <option value="active">solo activas</option>
           </select>
         </label>
+      </div>
+      <div id="histBulk" class="row" style="margin-bottom:.6rem" hidden>
+        <button class="ghost small" data-clearalerts="resolved">🗑 Borrar resueltas</button>
+        <button class="ghost small" data-clearalerts="all">🗑 Borrar todo el historial</button>
       </div>
       <div id="histBox"></div>
     </section>

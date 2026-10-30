@@ -195,13 +195,16 @@ function onState() {
 
 /* -------------------------------------------------------------------- panel */
 
+const canWrite = () => !(ME && ME.authed && ME.role !== "admin");
+
 function alertHTML(a) {
   const icon = a.severity === "critical" ? "🔴" : "🟠";
   const where = esc(a.router || "?") + (a.iface ? " · " + esc(a.iface) : "");
   const cls = "alert " + a.severity + (a.acked_at ? " acked" : " new");
+  const w = canWrite();
   const action = a.acked_at
-    ? '<span class="muted">reconocida</span>'
-    : `<button class="ghost small" data-ack="${a.id}">Reconocer</button>`;
+    ? `<span class="muted">reconocida</span>${w ? ` <button class="ghost small" data-delalert="${a.id}" title="Borrar esta alerta">🗑 Borrar</button>` : ""}`
+    : w ? `<button class="ghost small" data-ack="${a.id}">Reconocer</button>` : "";
   const map = a.kind === "pon_down" ? ' <button class="ghost small" data-tabgo="network">Ver mapa</button>' : "";
   return `<div class="${cls}">
     <div class="icon">${icon}</div>
@@ -305,8 +308,11 @@ function renderPanel() {
     box.innerHTML = '<div class="allclear">✅ Todo normal: sin alertas activas</div>';
   } else {
     const unacked = S.alerts.filter((a) => !a.acked_at).length;
-    const head = `<div class="alerts-head"><h2>Alertas activas (${S.alerts.length})</h2>
-      ${unacked > 1 ? '<button class="ghost small" data-ackall="1">Reconocer todas</button>' : ""}</div>`;
+    const acked = S.alerts.length - unacked;
+    const w = canWrite();
+    const head = `<div class="alerts-head"><h2>Alertas activas (${S.alerts.length})</h2><div class="row">
+      ${w && unacked > 1 ? '<button class="ghost small" data-ackall="1">Reconocer todas</button>' : ""}
+      ${w && acked > 0 ? `<button class="ghost small" data-clearalerts="acked">🗑 Borrar reconocidas (${acked})</button>` : ""}</div></div>`;
     const pppoe = S.alerts.filter((a) => a.kind === "pppoe_down");
     const others = S.alerts.filter((a) => a.kind !== "pppoe_down");
     const shown = pppoe.slice(0, 5);
@@ -417,17 +423,19 @@ function reasonHTML(r) {
   return r.reason_es ? `${esc(r.reason_es)} <span class="muted">(${esc(r.reason)})</span>` : esc(r.reason);
 }
 
-function pppoeSummaryHTML(sum) {
+function pppoeSummaryHTML(sum, selected) {
   const cards = sum.routers
     .map((r) => {
+      const pick = `data-pprouter="${r.id}" tabindex="0" role="button" title="Clic para ver solo este router"`;
+      const on = String(r.id) === String(selected) ? " sel" : "";
       if (!r.monitored) {
-        return `<div class="pcard"><h3>${esc(r.name)}</h3><div class="sub">PPPoE no se monitorea en este router.</div></div>`;
+        return `<div class="pcard${on}" ${pick}><h3>${esc(r.name)}</h3><div class="sub">PPPoE no se monitorea en este router.</div></div>`;
       }
       if (r.online == null) {
-        return `<div class="pcard"><h3>${esc(r.name)}</h3><div class="sub">${r.error ? esc(r.error) : "Esperando la primera lectura…"}</div></div>`;
+        return `<div class="pcard${on}" ${pick}><h3>${esc(r.name)}</h3><div class="sub">${r.error ? esc(r.error) : "Esperando la primera lectura…"}</div></div>`;
       }
       const cls = r.mass ? "pcard mass" : r.down ? "pcard warn" : "pcard";
-      return `<div class="pcard ${cls.replace("pcard", "")}"><h3>${esc(r.name)}${r.mass ? ' <span class="pill crit">CAÍDA MASIVA</span>' : ""}</h3>
+      return `<div class="pcard ${cls.replace("pcard", "")}${on}" ${pick}><h3>${esc(r.name)}${r.mass ? ' <span class="pill crit">CAÍDA MASIVA</span>' : ""}</h3>
         <div class="big">${r.online}</div><div class="sub">clientes en línea${r.registered != null ? ` de ${r.registered} registrados` : ""}</div>
         ${r.registered != null ? `<div class="sub">${r.offline} sin conexión${r.disabled ? " · " + r.disabled + " deshabilitados" : ""}</div>` : ""}
         <div class="sub" style="margin-top:.3rem"><span class="${r.down ? "down-n" : ""}">${r.down} desconectados</span>
@@ -503,7 +511,11 @@ async function renderPppoe() {
       sel.innerHTML = '<option value="">todos</option>' + sum.routers.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
       sel.value = rid;
     }
-    $("#pppoeSummary").innerHTML = pppoeSummaryHTML(sum);
+    $("#pppoeSummary").innerHTML = pppoeSummaryHTML(sum, rid);
+    const picked = sum.routers.find((r) => String(r.id) === String(rid));
+    $("#pppoeScope").innerHTML = picked
+      ? `<span class="chip warn">Mostrando solo <b>${esc(picked.name)}</b></span> <button class="ghost small" data-pprouter="">Ver todos los routers</button>`
+      : sum.routers.length > 1 ? '<span class="muted">Tocá un router para ver solo sus conexiones.</span>' : "";
     $("#pppoeSyslog").innerHTML = syslogLine(sum.syslog);
     $("#pppoeDownCount").textContent = down.total ? `(${down.total})` : "";
     $("#pppoeDown").innerHTML = downTableHTML(down);
@@ -628,12 +640,15 @@ async function renderHistory() {
         return `<tr><td>${fmtDateTime(a.started_at)}</td><td>${esc(a.router || "(eliminado)")}</td>
           <td>${esc(a.iface || "—")}</td>
           <td><span class="sev ${esc(a.severity)}"></span>${esc(KIND_ES[a.kind] || a.kind)}</td>
-          <td>${esc(a.message)}</td><td>${fmtDur(end - a.started_at)}</td><td>${status}</td></tr>`;
+          <td>${esc(a.message)}</td><td>${fmtDur(end - a.started_at)}</td><td>${status}</td>
+          ${canWrite() ? `<td><button class="ghost small" data-delalert="${a.id}" title="Borrar">🗑</button></td>` : ""}</tr>`;
       })
       .join("");
+    const hb = $("#histBulk");
+    if (hb) hb.hidden = !canWrite() || !rows.length;
     $("#histBox").innerHTML = rows.length
       ? `<div class="card tablewrap"><table><thead><tr><th>Inicio</th><th>Router</th><th>Interfaz</th><th>Tipo</th>
-         <th>Detalle</th><th>Duración</th><th>Estado</th></tr></thead><tbody>${body}</tbody></table></div>`
+         <th>Detalle</th><th>Duración</th><th>Estado</th>${canWrite() ? "<th></th>" : ""}</tr></thead><tbody>${body}</tbody></table></div>`
       : '<div class="card muted">Todavía no hubo alertas.</div>';
   } catch (e) {
     $("#histBox").innerHTML = `<div class="card router-err">${esc(e.message)}</div>`;
@@ -899,6 +914,23 @@ document.addEventListener("click", async (ev) => {
     } else if (t.dataset.ack) {
       await api(`/api/alerts/${t.dataset.ack}/ack`, { method: "POST" });
       refresh();
+    } else if (t.dataset.delalert) {
+      await api(`/api/alerts/${t.dataset.delalert}`, { method: "DELETE" });
+      toast("Alerta borrada");
+      refresh();
+      if (!$("#tab-history").hidden) renderHistory();
+    } else if (t.dataset.clearalerts) {
+      const sc = t.dataset.clearalerts;
+      const msg = {
+        acked: "¿Borrar las alertas activas que ya reconociste?",
+        resolved: "¿Borrar del historial todas las alertas ya resueltas?",
+        all: "¿Borrar TODO el historial de alertas, incluidas las activas? Las activas que sigan sin resolverse no volverán a avisar hasta que se normalicen.",
+      }[sc];
+      if (!confirm(msg)) return;
+      const r = await api(`/api/alerts?scope=${sc}`, { method: "DELETE" });
+      toast(`${r.deleted} alerta${r.deleted === 1 ? "" : "s"} borrada${r.deleted === 1 ? "" : "s"}`);
+      refresh();
+      if (!$("#tab-history").hidden) renderHistory();
     } else if (t.dataset.ackall) {
       await api("/api/alerts/ack_all", { method: "POST" });
       refresh();
@@ -1004,3 +1036,21 @@ setInterval(() => {
 }, 5000);
 loadMe();
 refresh();
+
+/* Clic (o Enter) en el recuadro de un router: las listas pasan a mostrar solo ese router; otro clic lo suelta. */
+function pickPppoeRouter(el) {
+  const sel = $("#pppoeRouter");
+  const id = el.dataset.pprouter;
+  sel.value = id === sel.value ? "" : id;
+  renderPppoe();
+}
+document.addEventListener("click", (ev) => {
+  const el = ev.target.closest("[data-pprouter]");
+  if (el) pickPppoeRouter(el);
+});
+document.addEventListener("keydown", (ev) => {
+  if ((ev.key === "Enter" || ev.key === " ") && ev.target.dataset && ev.target.dataset.pprouter !== undefined && ev.target.classList.contains("pcard")) {
+    ev.preventDefault();
+    pickPppoeRouter(ev.target);
+  }
+});

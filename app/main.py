@@ -498,6 +498,27 @@ def create_app(
         )
         return {"acked": cur.rowcount}
 
+    @app.delete("/api/alerts/{alert_id}", dependencies=[Depends(admin)])
+    def alert_delete(alert_id: int):
+        cur = db.execute("DELETE FROM alerts WHERE id=?", (alert_id,))
+        if not cur.rowcount:
+            raise HTTPException(404, "Alerta no encontrada")
+        return {"deleted": 1}
+
+    @app.delete("/api/alerts", dependencies=[Depends(admin)])
+    def alerts_clear(scope: str):
+        """Borra alertas en bloque: `acked` (activas ya reconocidas), `resolved` (ya resueltas) o `all`.
+        Una alerta activa que se borra no vuelve a avisar mientras el problema siga igual."""
+        where = {
+            "acked": "resolved_at IS NULL AND acked_at IS NOT NULL",
+            "resolved": "resolved_at IS NOT NULL",
+            "all": "1=1",
+        }.get(scope)
+        if where is None:
+            raise HTTPException(400, "scope debe ser acked, resolved o all")
+        cur = db.execute(f"DELETE FROM alerts WHERE {where}")
+        return {"deleted": cur.rowcount}
+
     @app.get("/api/history", dependencies=[Depends(viewer)])
     def history(router_id: int, iface: str, minutes: int = 60):
         minutes = max(5, min(minutes, 7 * 1440))

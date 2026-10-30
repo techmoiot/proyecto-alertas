@@ -587,3 +587,27 @@ def test_repeat_offenders_counts_disconnects_ignores_mass_and_flags_hot_pon(clie
                "VALUES(?,?,?,?,?,?,?)", (rid, "PPPoE", "pppoe_mass", "critical", "x", t - 10, t + 99999))
     assert client.get("/api/pppoe/repeat?days=7&min=3").json()["total"] == 0
     assert client.get("/api/pppoe/repeat?days=7&min=3&mass=true").json()["total"] == 1
+
+
+def test_delete_alerts_one_by_scope_and_requires_admin(client, app):
+    rid = add_router(client)
+    db = app.state.db
+    now = time.time()
+    ins = "INSERT INTO alerts(router_id, iface, kind, severity, message, started_at, resolved_at, acked_at) VALUES(?,?,?,?,?,?,?,?)"
+    db.execute(ins, (rid, "a", "link_down", "critical", "activa sin reconocer", now, None, None))
+    db.execute(ins, (rid, "b", "link_down", "critical", "activa reconocida", now, None, now))
+    db.execute(ins, (rid, "c", "link_down", "critical", "resuelta", now - 9, now - 5, None))
+    ids = {a["message"]: a["id"] for a in client.get("/api/alerts").json()}
+    assert client.delete("/api/alerts?scope=otro").status_code == 400
+    assert client.delete(f"/api/alerts/{ids['resuelta']}").json() == {"deleted": 1}
+    assert client.delete(f"/api/alerts/{ids['resuelta']}").status_code == 404
+    db.execute(ins, (rid, "d", "link_down", "critical", "resuelta 2", now - 9, now - 5, None))
+    assert client.delete("/api/alerts?scope=resolved").json() == {"deleted": 1}
+    assert client.delete("/api/alerts?scope=acked").json() == {"deleted": 1}
+    left = [a["message"] for a in client.get("/api/alerts").json()]
+    assert left == ["activa sin reconocer"]
+    assert client.delete("/api/alerts?scope=all").json() == {"deleted": 1}
+    assert client.get("/api/alerts").json() == []
+    with TestClient(app) as anon:
+        assert anon.delete("/api/alerts?scope=all").status_code == 401
+        assert anon.delete("/api/alerts/1").status_code == 401
