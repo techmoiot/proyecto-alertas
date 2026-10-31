@@ -12,6 +12,7 @@
     <nav id="tabs">
       <button data-tab="panel" class="active">Panel</button>
       <button data-tab="pppoe">PPPoE</button>
+      <button data-tab="usage">Consumo</button>
       <button data-tab="network">Red</button>
       <button data-tab="history">Historial</button>
       <button data-tab="config">Configuración</button>
@@ -92,6 +93,22 @@
       </details>
     </section>
 
+    <section id="tab-usage" hidden>
+      <div class="toolbar">
+        <h2>Consumo por cliente</h2>
+        <div class="row">
+          <label>Router <select id="usageRouter"><option value="">todos</option></select></label>
+          <label>Período <select id="usageHours">
+            <option value="6">6 horas</option><option value="24" selected>24 horas</option>
+            <option value="72">3 días</option><option value="168">7 días</option></select></label>
+          <input id="usageQ" type="search" placeholder="Buscar cliente…" style="width:12rem">
+          <label style="display:flex;gap:.3rem;align-items:center"><input type="checkbox" id="usageBad"> solo anormales</label>
+        </div>
+      </div>
+      <div id="usageSummary" class="row" style="margin-bottom:.6rem"></div>
+      <div class="card tablewrap" id="usageBox"><p class="muted">Cargando…</p></div>
+    </section>
+
     <section id="tab-network" hidden>
       <div id="netEmpty" class="card" hidden>
         <h2>Mapa de la red</h2>
@@ -162,5 +179,6 @@
   <script src="/remote.js"></script>
   <script src="/users.js"></script>
   <script src="/backups.js"></script>
+  <script src="/usage.js"></script>
 </body>
 </html>

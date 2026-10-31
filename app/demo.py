@@ -68,6 +68,37 @@ PROFILES = {
 }
 
 
+def seed_usage(db, now: float) -> None:
+    """Historial de consumo de ejemplo (14 días) para que la pantalla tenga datos desde el primer minuto."""
+    if db.query("SELECT 1 FROM usage_h LIMIT 1"):
+        return
+    core = db.query("SELECT id FROM routers WHERE name='Demo-Core'")
+    if not core:
+        return
+    rid, rng = core[0]["id"], random.Random(7)
+    hour = int(now // 3600) * 3600
+    rows_h, rows_q = [], []
+    for c in range(1, PPPOE_CLIENTS["Demo-Core"] + 1):
+        user = f"cliente{c:03d}"
+        base = rng.uniform(0.6, 2.5) * 1e6 / 8          # bytes/s medios de bajada
+        for h in range(14 * 24):
+            ts = hour - h * 3600
+            evening = 1.8 if 19 <= (ts // 3600 + 18) % 24 <= 23 else 0.6   # hora local aprox. (UTC-6)
+            down = int(base * evening * rng.uniform(0.6, 1.4) * 3600)
+            up = int(down * rng.uniform(0.05, 0.12))
+            if c == 5 and h < 30:                      # el cliente 5 sube sin parar desde hace ~30 h
+                up, down = int(25e6 / 8 * 3600 * rng.uniform(0.8, 1.1)), int(down * 1.3)
+            if c == 9 and h < 10:                      # y el 9 se disparó en la bajada hace unas horas
+                down = int(down * 12)
+            rows_h.append((rid, user, ts, down, up))
+            if h < 72:
+                for q in range(4):
+                    rows_q.append((rid, user, ts + q * 900, down // 4, up // 4))
+    sql = "INSERT OR IGNORE INTO {t}(router_id, user, ts, down_b, up_b) VALUES(?,?,?,?,?)"
+    db.executemany(sql.format(t="usage_h"), rows_h)
+    db.executemany(sql.format(t="usage_q"), rows_q)
+
+
 def apply_demo(db) -> None:
     db.set_settings(DEMO_SETTINGS)
     now = time.time()
@@ -77,6 +108,7 @@ def apply_demo(db) -> None:
             "VALUES(?,?,?,?,?,?)",
             (name, f"demo-{i}", 8728, "demo", "demo", now),
         )
+    seed_usage(db, now)
     if not db.query("SELECT 1 FROM olts"):
         first = db.query("SELECT id FROM routers ORDER BY id LIMIT 1")
         oid = db.execute("INSERT INTO olts(name, cards, ports_per_card, router_id) VALUES('OLT-Demo', 2, 3, ?)",
@@ -141,6 +173,19 @@ class DemoClient:
             for i in range(1, self.n_clients + 1)
             if i not in offline
         ]
+
+    def fetch_pppoe_usage(self) -> list[dict]:
+        """Contadores de cada sesión PPPoE conectada (crecen con el tiempo; el cliente 5 sube demasiado)."""
+        now = time.time()
+        out = []
+        for i in range(1, self.n_clients + 1):
+            if i in self._offline:
+                continue
+            secs = now - self.t0
+            down_bps, up_bps = (3e6, 0.5e6) if i != 5 else (2e6, 40e6)
+            out.append({"name": f"<pppoe-{self._client_name(i)}>", "rx-byte": int(up_bps / 8 * secs),
+                        "tx-byte": int(down_bps / 8 * secs)})
+        return out
 
     def fetch_pppoe_secrets(self) -> list[dict]:
         """Todos los clientes demo más unos registrados que no están conectados."""

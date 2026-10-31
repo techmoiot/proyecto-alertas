@@ -220,3 +220,12 @@ tbody tr:hover { background: rgba(255, 255, 255, .03); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #2b3646; border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: #3b4a5f; }
+
+/* ---- consumo por cliente ---- */
+tr.bad { background: rgba(240, 68, 58, .08); }
+.dbars { display: flex; gap: 4px; align-items: flex-end; height: 110px; }
+.dbar { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; height: 100%; }
+.dcol { flex: 1; width: 100%; display: flex; align-items: flex-end; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.dcol i { display: block; width: 100%; background: var(--rx); min-height: 1px; }
+.dcol i.bad { background: var(--crit); }
+.dbar small { color: var(--muted); font-size: .7rem; }

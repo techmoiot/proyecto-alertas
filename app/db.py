@@ -63,6 +63,26 @@ CREATE TABLE IF NOT EXISTS samples(
 );
 CREATE INDEX IF NOT EXISTS idx_samples ON samples(router_id, iface, ts);
 
+CREATE TABLE IF NOT EXISTS usage_q(
+    router_id INTEGER NOT NULL,
+    user TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    down_b INTEGER NOT NULL DEFAULT 0,
+    up_b INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(router_id, user, ts)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_usage_q_ts ON usage_q(ts);
+
+CREATE TABLE IF NOT EXISTS usage_h(
+    router_id INTEGER NOT NULL,
+    user TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    down_b INTEGER NOT NULL DEFAULT 0,
+    up_b INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(router_id, user, ts)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_usage_h_ts ON usage_h(ts);
+
 CREATE TABLE IF NOT EXISTS baselines(
     router_id INTEGER NOT NULL,
     iface TEXT NOT NULL,
@@ -175,6 +195,10 @@ DEFAULT_SETTINGS: dict[str, float] = {
     "backup_every_h": 24,        # cada cuántas horas se respalda la base de MAGI y la config de los routers
     "backup_keep": 14,           # copias de la base de MAGI que se conservan
     "router_backup_keep": 30,    # versiones distintas de la config de cada router que se conservan
+    "usage_enabled": 1,          # historial de consumo por cliente PPPoE (1 = sí)
+    "usage_poll_s": 300,         # cada cuántos segundos se leen los contadores de cada cliente
+    "usage_factor": 3.0,         # veces su consumo habitual (mediana de días anteriores) que se considera anormal
+    "usage_min_gb": 5.0,         # no marcar como anormal por debajo de estos GB en 24 h
 }
 
 
@@ -252,6 +276,10 @@ class DB:
             raise ValueError("poll_interval mínimo: 2 segundos")
         if "anomaly_factor" in clean and clean["anomaly_factor"] < 1.1:
             raise ValueError("anomaly_factor mínimo: 1.1")
+        if "usage_poll_s" in clean and clean["usage_poll_s"] < 60:
+            raise ValueError("usage_poll_s mínimo: 60 segundos")
+        if "usage_factor" in clean and clean["usage_factor"] < 1.1:
+            raise ValueError("usage_factor mínimo: 1.1")
         if "baseline_tau_s" in clean and clean["baseline_tau_s"] < 10:
             raise ValueError("baseline_tau_s mínimo: 10 segundos")
         with self._lock:

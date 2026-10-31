@@ -32,6 +32,7 @@ from .notify import Notifier
 from .poller import Poller, RouterClient
 from .pppoe import PPPoEMonitor, explain_reason
 from .syslog import SyslogReceiver
+from .usage import WINDOW_HOURS, UsageMonitor
 from .topology import ConfigError, Topology, detect_pons
 from .users import UserError, Users, fingerprint
 from .wg import RemoteError, WGManager
@@ -195,7 +196,8 @@ def create_app(
     backup = BackupManager(db, backup_dir or None, wg_state_dir=cfg.wg_state_dir)
     if client_factory is None:
         client_factory = DemoClient if cfg.demo else RouterClient
-    poller = Poller(db, engine, client_factory, pppoe, topology, remote, backup)
+    usage = UsageMonitor(db)
+    poller = Poller(db, engine, client_factory, pppoe, topology, remote, backup, usage)
     if cfg.demo:
         apply_demo(db)
 
@@ -221,6 +223,7 @@ def create_app(
     app.state.pppoe, app.state.syslog, app.state.topology = pppoe, syslog, topology
     app.state.remote = remote
     app.state.backup = backup
+    app.state.usage = usage
     app.state.restart = lambda: os.kill(os.getpid(), signal.SIGTERM)   # systemd lo vuelve a levantar
     app.state.cfg, app.state.notifier = cfg, notifier
 
@@ -417,6 +420,10 @@ def create_app(
     def users_js():
         return _page("users.js", "application/javascript")
 
+    @app.get("/usage.js", dependencies=[Depends(viewer)], include_in_schema=False)
+    def usage_js():
+        return _page("usage.js", "application/javascript")
+
     @app.get("/backups.js", dependencies=[Depends(viewer)], include_in_schema=False)
     def backups_js():
         return _page("backups.js", "application/javascript")
@@ -603,6 +610,7 @@ def create_app(
         db.execute("DELETE FROM routers WHERE id=?", (rid,))
         for table in ("iface_config", "samples", "baselines"):
             db.execute(f"DELETE FROM {table} WHERE router_id=?", (rid,))
+        usage.forget_router(rid)
         if start_poller:
             poller.sync()  # detiene el hilo del router
         remote.remove_peer(rid)     # si era un router remoto, libera su túnel
@@ -863,6 +871,21 @@ def create_app(
         remote.write_files()          # rearma la lista de peers del túnel con la base restaurada
         tasks.add_task(lambda: threading.Timer(1.0, app.state.restart).start())
         return {**result, "restarting": True}
+
+    # ------------------------------------------------- consumo por cliente PPPoE
+
+    @app.get("/api/usage/top", dependencies=[Depends(viewer)])
+    def usage_top(hours: int = 24, router_id: int | None = None, q: str = "", limit: int = 50,
+                  only_abnormal: bool = False):
+        if hours not in WINDOW_HOURS:
+            raise HTTPException(400, f"hours debe ser uno de {list(WINDOW_HOURS)}")
+        return usage.top(hours, router_id, q.strip()[:64], limit, only_abnormal)
+
+    @app.get("/api/usage/client", dependencies=[Depends(viewer)])
+    def usage_client(router_id: int, user: str, hours: int = 24):
+        if not user or len(user) > 128:
+            raise HTTPException(400, "Falta el usuario")
+        return usage.client(router_id, user, hours)
 
     # --------------------------------------------------- OLT / PON / mapa de red
 

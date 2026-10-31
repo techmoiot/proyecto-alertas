@@ -677,6 +677,10 @@ const SETTING_FIELDS = [
   ["backup_every_h", "Cada cuántas horas respaldar", "24 = una vez al día."],
   ["backup_keep", "Copias de la base de MAGI que se conservan", "Las más viejas se borran solas."],
   ["router_backup_keep", "Versiones de la config de cada router que se conservan", "Solo se guarda una versión nueva si la configuración cambió."],
+  ["usage_enabled", "Historial de consumo por cliente (1 = sí, 0 = no)", "Lee los contadores de bytes de cada sesión PPPoE para la pestaña Consumo."],
+  ["usage_poll_s", "Cada cuántos segundos leer el consumo", "Mínimo 60. 300 = cada 5 minutos."],
+  ["usage_factor", "Veces lo habitual para marcar consumo anormal", "Compara las últimas 24 h con la mediana de los días anteriores del mismo cliente."],
+  ["usage_min_gb", "GB mínimos en 24 h para marcar anormal", "Evita marcar a clientes que consumen muy poco."],
   ["pppoe_enabled", "Monitorear PPPoE (1 = sí, 0 = no)", "Apaga todo el monitoreo de clientes PPPoE."],
   ["pppoe_poll_s", "Lectura de clientes PPPoE (s)", "Cada cuántos segundos se lee la lista de clientes conectados."],
   ["pppoe_grace_s", "Segundos caído antes de alertar", "Si el cliente se reconecta antes, no se alerta: en PPPoE es normal."],
@@ -885,9 +889,10 @@ function showTab(name) {
   if (tab === "network" && name !== "network" && typeof netStop === "function") netStop();
   tab = name;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  ["panel", "pppoe", "network", "history", "config"].forEach((n) => ($("#tab-" + n).hidden = n !== name));
+  ["panel", "pppoe", "usage", "network", "history", "config"].forEach((n) => ($("#tab-" + n).hidden = n !== name));
   if (name === "panel" && S) renderPanel();
   if (name === "pppoe") renderPppoe();
+  if (name === "usage" && typeof renderUsage === "function") renderUsage();
   if (name === "network") netStart();
   if (name === "history") renderHistory();
   if (name === "config") renderConfig();

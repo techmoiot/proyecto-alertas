@@ -195,6 +195,18 @@ MKMON_TELEGRAM_CHAT=-1001234567890
 
 Después `sudo systemctl restart mk-monitor`. Avisa cuando salta y cuando se resuelve cada alerta.
 
+## Consumo por cliente
+
+La pestaña **Consumo** muestra cuánto bajó y subió cada cliente PPPoE, ordenado de mayor a menor, y marca el
+consumo anormal: las últimas 24 h contra la **mediana** de los días anteriores del mismo cliente (por defecto
+3× y más de 5 GB; se ajusta en Configuración → ajustes «usage_*»). Al tocar un cliente se ve su gráfica de
+bajada/subida (6 h a 30 d) y sus últimos 14 días.
+
+MAGI lee, cada 5 minutos por defecto, los contadores de bytes de las interfaces dinámicas `<pppoe-USUARIO>` del
+MikroTik (una sola consulta por router, con filtro `type=pppoe-in`). Se guardan intervalos de 15 minutos durante 3
+días y de 1 hora durante 35 días. El historial arranca en la segunda lectura y la comparación con lo habitual
+necesita al menos 3 días de datos. Si el servidor PPPoE nombra las interfaces de otra forma, no habrá datos.
+
 ## Probarlo sin MikroTik (modo demo)
 
 ```bash
